@@ -1,0 +1,41 @@
+# Executables and build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+*.a
+*.bak
+*.obj
+*.out
+*.test
+*.prof
+
+# Go build cache
+.cache/
+go.sum # If using a version of Go older than 1.14 and not using modules, or if you want to regenerate go.sum on each build.
+
+# IDE and editor files
+.idea/ # IntelliJ IDEA
+.vscode/ # VS Code
+*.sublime-project
+*.sublime-workspace
+.DS_Store # macOS specific
+Thumbs.db # Windows specific
+
+# Dependency directories
+vendor/ # If you're using Go modules and vendoring dependencies
+
+# Test results and coverage reports
+test_output/
+coverage.out
+
+# Logs
+*.log
+
+# Environment variables and sensitive data
+.env
+.env.*
+
+# Secret files
+serviceAccountKey.json

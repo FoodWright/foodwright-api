@@ -1,6 +1,6 @@
 # --- Build Stage ---
 # Use a slim Go image for the builder stage
-FROM golang:1.25 AS builder
+FROM golang:1.25.3 AS builder
 
 # Set the working directory inside the container
 WORKDIR /app
@@ -32,7 +32,7 @@ COPY --from=builder /api-server /api-server
 
 # Copy the database migrations so the application can run them on startup.
 # This assumes your migrations are in a 'db/migrations' directory at the root.
-COPY ./db/migrations ./db/migrations
+COPY --from=builder /app/db/migrations ./db/migrations
 
 # Expose the port the server will run on. The actual port is set by the PORT env var in Cloud Run.
 EXPOSE 8080

@@ -14,9 +14,8 @@ import (
 
 func main() {
 	// 1. Load .env file
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file")
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found or error loading it, relying on environment variables.")
 	}
 
 	// 2. Initialize Firebase

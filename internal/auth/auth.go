@@ -24,21 +24,40 @@ type AuthHandler struct {
 
 // InitFirebase initializes the Firebase app and auth client
 func InitFirebase(keyFilePath string) (*auth.Client, error) {
-	if keyFilePath == "" {
-		keyFilePath = "serviceAccountKey.json"
-	}
-	if os.Getenv("FIREBASE_SERVICE_ACCOUNT_KEY_PATH") == "" {
-		if err := godotenv.Load(); err != nil {
-			log.Println("No .env file found or error loading it, relying on environment variables.")
-		}
-		keyFilePath = os.Getenv("FIREBASE_SERVICE_ACCOUNT_KEY_PATH")
-		if keyFilePath == "" {
-			keyFilePath = "serviceAccountKey.json"
-		}
+	// if keyFilePath == "" {
+	// 	keyFilePath = "serviceAccountKey.json"
+	// }
+	// if os.Getenv("FIREBASE_SERVICE_ACCOUNT_KEY_PATH") == "" {
+	// 	if err := godotenv.Load(); err != nil {
+	// 		log.Println("No .env file found or error loading it, relying on environment variables.")
+	// 	}
+	// 	keyFilePath = os.Getenv("FIREBASE_SERVICE_ACCOUNT_KEY_PATH")
+	// 	if keyFilePath == "" {
+	// 		keyFilePath = "serviceAccountKey.json"
+	// 	}
+	// }
+	var opt option.ClientOption
+	var app *firebase.App
+	var err error
+
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found or error loading it, relying on environment variables.")
 	}
 
-	opt := option.WithCredentialsFile(keyFilePath)
-	app, err := firebase.NewApp(context.Background(), nil, opt)
+	// If the key path is provided (for local dev), use it.
+	if os.Getenv("FIREBASE_SERVICE_ACCOUNT_KEY_PATH") != "" {
+		log.Println("Initializing Firebase with service account key file.")
+		opt = option.WithCredentialsFile(os.Getenv("FIREBASE_SERVICE_ACCOUNT_KEY_PATH"))
+		app, err = firebase.NewApp(context.Background(), nil, opt)
+	} else {
+		// If running in GCP (e.g., Cloud Run), use Application Default Credentials.
+		// The SDK will automatically find the service account attached to the environment.
+		log.Println("Initializing Firebase with Application Default Credentials.")
+		app, err = firebase.NewApp(context.Background(), nil)
+	}
+
+	// opt := option.WithCredentialsFile(keyFilePath)
+	// app, err := firebase.NewApp(context.Background(), nil, opt)
 	if err != nil {
 		return nil, fmt.Errorf("error initializing Firebase app: %w", err)
 	}

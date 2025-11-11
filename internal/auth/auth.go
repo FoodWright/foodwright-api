@@ -28,7 +28,9 @@ func InitFirebase(keyFilePath string) (*auth.Client, error) {
 		keyFilePath = "serviceAccountKey.json"
 	}
 	if os.Getenv("FIREBASE_SERVICE_ACCOUNT_KEY_PATH") == "" {
-		godotenv.Load()
+		if err := godotenv.Load(); err != nil {
+			log.Println("No .env file found or error loading it, relying on environment variables.")
+		}
 		keyFilePath = os.Getenv("FIREBASE_SERVICE_ACCOUNT_KEY_PATH")
 		if keyFilePath == "" {
 			keyFilePath = "serviceAccountKey.json"

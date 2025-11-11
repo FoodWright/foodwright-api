@@ -12,26 +12,19 @@ import (
 
 // --- JSONB Structs and Scanners ---
 
-// Ingredient defines the structure for a single ingredient
 type Ingredient struct {
 	Quantity string `json:"quantity"`
 	Name     string `json:"name"`
 }
-
-// IngredientsList is a slice of Ingredient that implements sql.Scanner and driver.Valuer
 type IngredientsList []Ingredient
 
-// Value implements the driver.Valuer interface, converting our list to JSON
 func (il IngredientsList) Value() (driver.Value, error) {
 	if il == nil {
-		il = []Ingredient{} // Ensure '[]' instead of 'null'
+		il = []Ingredient{}
 	}
-	// --- FIX: Return string, not []byte ---
 	data, err := json.Marshal(il)
 	return string(data), err
 }
-
-// Scan implements the sql.Scanner interface, converting JSON from DB to our list
 func (il *IngredientsList) Scan(value interface{}) error {
 	b, ok := value.([]byte)
 	if !ok {
@@ -44,25 +37,18 @@ func (il *IngredientsList) Scan(value interface{}) error {
 	return json.Unmarshal(b, il)
 }
 
-// Instruction defines the structure for a single step
 type Instruction struct {
 	Step string `json:"step"`
 }
-
-// InstructionsList is a slice of Instruction that implements sql.Scanner and driver.Valuer
 type InstructionsList []Instruction
 
-// Value implements the driver.Valuer interface
 func (il InstructionsList) Value() (driver.Value, error) {
 	if il == nil {
-		il = []Instruction{} // Ensure '[]' instead of 'null'
+		il = []Instruction{}
 	}
-	// --- FIX: Return string, not []byte ---
 	data, err := json.Marshal(il)
 	return string(data), err
 }
-
-// Scan implements the sql.Scanner interface
 func (il *InstructionsList) Scan(value interface{}) error {
 	b, ok := value.([]byte)
 	if !ok {
@@ -91,7 +77,7 @@ type Recipe struct {
 	SubmittedByUsername sql.NullString   `json:"submitted_by_username"`
 	Ingredients         IngredientsList  `json:"ingredients"`
 	Instructions        InstructionsList `json:"instructions"`
-	ImageURL            sql.NullString   `json:"image_url"` // <-- NEW FIELD
+	ImageURL            sql.NullString   `json:"image_url"`
 }
 
 type PaginatedRecipes struct {
@@ -127,25 +113,42 @@ type RecipeComment struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-type UserProfile struct {
-	ID        string         `json:"id"`
-	Username  string         `json:"username"`
-	Rank      string         `json:"rank"`
-	XP        int            `json:"xp"`
-	Badges    pq.StringArray `json:"badges"`
-	IsAdmin   bool           `json:"is_admin"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
+// --- NEW: Badge Struct ---
+// Represents a badge definition
+type Badge struct {
+	ID          int64          `json:"id"`
+	RuleKey     string         `json:"rule_key"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	IconURL     sql.NullString `json:"icon_url"`
+	BadgeType   string         `json:"badge_type"`
+	EarnedAt    sql.NullTime   `json:"earned_at,omitempty"` // Only used when attached to a user
 }
 
-type PublicUserProfile struct {
-	ID        string         `json:"id"`
-	Username  string         `json:"username"`
-	Rank      string         `json:"rank"`
-	XP        int            `json:"xp"`
-	Badges    pq.StringArray `json:"badges"`
-	CreatedAt time.Time      `json:"created_at"`
+// UserProfile (for logged-in user)
+type UserProfile struct {
+	ID          string    `json:"id"`
+	Username    string    `json:"username"`
+	Rank        string    `json:"rank"`
+	XP          int       `json:"xp"`
+	Badges      []Badge   `json:"badges"` // <-- MODIFIED
+	IsAdmin     bool      `json:"is_admin"`
+	IsSiteAdmin bool      `json:"is_site_admin"` // <-- NEW
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
+
+// PublicUserProfile (for public viewing)
+type PublicUserProfile struct {
+	ID        string    `json:"id"`
+	Username  string    `json:"username"`
+	Rank      string    `json:"rank"`
+	XP        int       `json:"xp"`
+	Badges    []Badge   `json:"badges"` // <-- MODIFIED
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// --- End Model Structs ---
 
 type PublicCookLog struct {
 	LogID       int64     `json:"log_id"`

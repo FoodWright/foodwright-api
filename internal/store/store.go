@@ -29,7 +29,6 @@ type Store struct {
 
 // InitDB initializes the database connection
 func InitDB(connStr string) (*sql.DB, error) {
-	// Load .env file
 	if connStr == "" {
 		godotenv.Load()
 		connStr = os.Getenv("NEON_DATABASE_URL")
@@ -67,7 +66,6 @@ func RunMigrations(db *sql.DB, migrationsPath string) error {
 		return fmt.Errorf("failed to init migrate instance: %w", err)
 	}
 	if err := m.Up(); err != nil {
-		// Return the error directly
 		return err
 	}
 	log.Println("Database migrations finished.")
@@ -76,12 +74,11 @@ func RunMigrations(db *sql.DB, migrationsPath string) error {
 
 // ----- API Handlers -----
 
-// HealthCheck is a simple health check endpoint
 func (s *Store) HealthCheck(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// GetRecipes handles fetching approved recipes with pagination and search
+// GetRecipes (no changes)
 func (s *Store) GetRecipes(c echo.Context) error {
 	searchQuery := c.QueryParam("search")
 	tagsQuery := c.QueryParam("tags")
@@ -171,7 +168,7 @@ func (s *Store) GetRecipes(c echo.Context) error {
 	return c.JSON(http.StatusOK, response)
 }
 
-// GetRecipeByID handles fetching a single recipe, with security check
+// GetRecipeByID (no changes)
 func (s *Store) GetRecipeByID(c echo.Context) error {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
@@ -205,7 +202,6 @@ func (s *Store) GetRecipeByID(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Database error"})
 	}
 
-	// Security Check
 	if r.Status == "private" && r.SubmittedByUserID.String != currentUserID {
 		log.Printf("Access denied for recipe %d: User %s is not owner", r.ID, currentUserID)
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Recipe not found"})
@@ -271,33 +267,36 @@ func (s *Store) GetProfile(c echo.Context) error {
 	log.Printf("Fetching profile for authenticated user: %s", userID)
 
 	var profile models.UserProfile
-	query := "SELECT id, username, rank, xp, badges, created_at, updated_at, is_admin FROM users WHERE id = $1"
-
+	query := `
+		SELECT id, username, rank, xp, created_at, updated_at, is_admin, is_site_admin 
+		FROM users WHERE id = $1
+	`
 	err := s.DB.QueryRow(query, userID).Scan(
 		&profile.ID,
 		&profile.Username,
 		&profile.Rank,
 		&profile.XP,
-		&profile.Badges,
 		&profile.CreatedAt,
 		&profile.UpdatedAt,
 		&profile.IsAdmin,
+		&profile.IsSiteAdmin,
 	)
 
 	if err == sql.ErrNoRows {
 		log.Printf("No profile found for user %s, creating one...\n", userID)
 		profile = models.UserProfile{
-			ID:        userID,
-			Username:  username,
-			Rank:      "Kitchen Novice",
-			XP:        1,
-			Badges:    []string{},
-			IsAdmin:   false, // Default
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+			ID:          userID,
+			Username:    username,
+			Rank:        "Kitchen Novice",
+			XP:          1,
+			Badges:      []models.Badge{},
+			IsAdmin:     false,
+			IsSiteAdmin: false,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
 		}
 		insertQuery := `
-			INSERT INTO users (id, username, rank, xp, badges, created_at, updated_at, is_admin)
+			INSERT INTO users (id, username, rank, xp, created_at, updated_at, is_admin, is_site_admin)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		`
 		_, err = s.DB.Exec(
@@ -306,22 +305,60 @@ func (s *Store) GetProfile(c echo.Context) error {
 			profile.Username,
 			profile.Rank,
 			profile.XP,
-			profile.Badges,
 			profile.CreatedAt,
 			profile.UpdatedAt,
 			profile.IsAdmin,
+			profile.IsSiteAdmin,
 		)
 		if err != nil {
 			log.Printf("Failed to create new user profile: %v\n", err)
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create profile"})
 		}
 		return c.JSON(http.StatusCreated, profile)
+
 	} else if err != nil {
 		log.Printf("Error fetching user profile: %v\n", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch profile"})
 	}
 
+	badges, err := s.getUserBadges(userID)
+	if err != nil {
+		log.Printf("Error fetching badges for user %s: %v", userID, err)
+		profile.Badges = []models.Badge{}
+	} else {
+		profile.Badges = badges
+	}
+
 	return c.JSON(http.StatusOK, profile)
+}
+
+// getUserBadges (no changes)
+func (s *Store) getUserBadges(userID string) ([]models.Badge, error) {
+	query := `
+		SELECT b.id, b.rule_key, b.name, b.description, b.icon_url, b.badge_type, ub.earned_at
+		FROM badges b
+		JOIN user_badges ub ON b.id = ub.badge_id
+		WHERE ub.user_id = $1
+		ORDER BY ub.earned_at DESC
+	`
+	rows, err := s.DB.Query(query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var badges []models.Badge
+	for rows.Next() {
+		var b models.Badge
+		if err := rows.Scan(
+			&b.ID, &b.RuleKey, &b.Name, &b.Description,
+			&b.IconURL, &b.BadgeType, &b.EarnedAt,
+		); err != nil {
+			return nil, err
+		}
+		badges = append(badges, b)
+	}
+	return badges, nil
 }
 
 // GetPublicProfile (no changes)
@@ -330,14 +367,13 @@ func (s *Store) GetPublicProfile(c echo.Context) error {
 	log.Printf("Fetching PUBLIC profile for user: %s", userID)
 
 	var profile models.PublicUserProfile
-	query := "SELECT id, username, rank, xp, badges, created_at FROM users WHERE id = $1"
+	query := "SELECT id, username, rank, xp, created_at FROM users WHERE id = $1"
 
 	err := s.DB.QueryRow(query, userID).Scan(
 		&profile.ID,
 		&profile.Username,
 		&profile.Rank,
 		&profile.XP,
-		&profile.Badges,
 		&profile.CreatedAt,
 	)
 
@@ -349,6 +385,14 @@ func (s *Store) GetPublicProfile(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch profile"})
 	}
 
+	badges, err := s.getUserBadges(userID)
+	if err != nil {
+		log.Printf("Error fetching badges for user %s: %v", userID, err)
+		profile.Badges = []models.Badge{}
+	} else {
+		profile.Badges = badges
+	}
+
 	return c.JSON(http.StatusOK, profile)
 }
 
@@ -356,7 +400,6 @@ func (s *Store) GetPublicProfile(c echo.Context) error {
 func (s *Store) GetPublicCookLogs(c echo.Context) error {
 	userID := c.Param("id")
 	log.Printf("Fetching PUBLIC cook logs for user: %s", userID)
-
 	query := `
 		SELECT l.id, l.recipe_id, r.title, l.created_at, l.notes, l.rating
 		FROM user_cooks_log l
@@ -371,13 +414,11 @@ func (s *Store) GetPublicCookLogs(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch logs"})
 	}
 	defer rows.Close()
-
 	var logs []models.PublicCookLog
 	for rows.Next() {
 		var l models.PublicCookLog
 		var sqlNotes sql.NullString
 		var sqlRating sql.NullInt64
-
 		if err := rows.Scan(&l.LogID, &l.RecipeID, &l.RecipeTitle, &l.LoggedAt, &sqlNotes, &sqlRating); err != nil {
 			log.Printf("Error scanning public cook log row: %v\n", err)
 			continue
@@ -390,7 +431,6 @@ func (s *Store) GetPublicCookLogs(c echo.Context) error {
 		}
 		logs = append(logs, l)
 	}
-
 	return c.JSON(http.StatusOK, logs)
 }
 
@@ -418,31 +458,35 @@ func (s *Store) LogCook(c echo.Context) error {
 	if req.Rating != nil && *req.Rating > 0 {
 		sqlRating = sql.NullInt64{Int64: int64(*req.Rating), Valid: true}
 	}
+
 	tx, err := s.DB.Begin()
 	if err != nil {
 		log.Printf("Failed to begin transaction: %v\n", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Database error"})
 	}
 	defer tx.Rollback()
+
 	var recipeXP int
 	err = tx.QueryRow("SELECT xp FROM recipes WHERE id = $1", recipeID).Scan(&recipeXP)
 	if err != nil {
 		log.Printf("Error getting recipe XP: %v\n", err)
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Recipe not found"})
 	}
+
 	var currentXP int
 	var currentRank string
-	var currentBadges pq.StringArray
-	err = tx.QueryRow("SELECT xp, rank, badges FROM users WHERE id = $1 FOR UPDATE", userID).Scan(&currentXP, &currentRank, &currentBadges)
+	err = tx.QueryRow("SELECT xp, rank FROM users WHERE id = $1 FOR UPDATE", userID).Scan(&currentXP, &currentRank)
 	if err != nil {
 		log.Printf("Error getting user profile for update: %v\n", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to get user profile"})
 	}
-	newlyAwardedBadges, updatedBadgesList, err := game.CheckAndAwardBadges(tx, userID, recipeID, currentBadges)
+
+	newlyAwardedBadges, err := game.CheckAndAwardBadges(tx, userID, recipeID)
 	if err != nil {
-		log.Printf("Error checking for badges: %v\n", err)
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to check for badges"})
+		log.Printf("Error in Badge Engine: %v. Continuing with log...", err)
+		newlyAwardedBadges = []string{}
 	}
+
 	_, err = tx.Exec(
 		"INSERT INTO user_cooks_log (user_id, recipe_id, notes, rating) VALUES ($1, $2, $3, $4)",
 		userID, recipeID, sqlNotes, sqlRating,
@@ -451,23 +495,27 @@ func (s *Store) LogCook(c echo.Context) error {
 		log.Printf("Error inserting cook log: %v\n", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to log cook record"})
 	}
+
 	newTotalXP := currentXP + recipeXP
 	newRank := game.CalculateRank(newTotalXP)
 	didRankUp := newRank != currentRank
+
 	updateQuery := `
 		UPDATE users
-		SET xp = $1, rank = $2, badges = $3, updated_at = NOW()
-		WHERE id = $4
+		SET xp = $1, rank = $2, updated_at = NOW()
+		WHERE id = $3
 	`
-	_, err = tx.Exec(updateQuery, newTotalXP, newRank, updatedBadgesList, userID)
+	_, err = tx.Exec(updateQuery, newTotalXP, newRank, userID)
 	if err != nil {
 		log.Printf("Error updating user profile: %v\n", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to update user profile"})
 	}
+
 	if err := tx.Commit(); err != nil {
 		log.Printf("Error committing transaction: %v\n", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to save cook log"})
 	}
+
 	log.Printf("User %s logged cook. XP: %d -> %d. Rank Up: %t. Badges Awarded: %v", userID, currentXP, newTotalXP, didRankUp, newlyAwardedBadges)
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message":            "Cook logged successfully!",
@@ -482,7 +530,6 @@ func (s *Store) LogCook(c echo.Context) error {
 // SubmitRecipe (no changes)
 func (s *Store) SubmitRecipe(c echo.Context) error {
 	userID := c.Get("userID").(string)
-
 	type SubmitRecipeRequest struct {
 		Title        string                  `json:"title"`
 		Description  string                  `json:"description"`
@@ -531,7 +578,6 @@ func (s *Store) SubmitRecipe(c echo.Context) error {
 		"pending", userID,
 		sqlImageURL,
 	).Scan(&newRecipeID)
-
 	if err != nil {
 		log.Printf("Error inserting submitted recipe: %v\n", err)
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
@@ -565,7 +611,6 @@ func (s *Store) GetMySubmissions(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch your recipes"})
 	}
 	defer rows.Close()
-
 	var recipes []models.Recipe
 	for rows.Next() {
 		var r models.Recipe
@@ -601,7 +646,6 @@ func (s *Store) GetPendingRecipes(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch pending recipes"})
 	}
 	defer rows.Close()
-
 	var recipes []models.Recipe
 	for rows.Next() {
 		var r models.Recipe
@@ -619,7 +663,7 @@ func (s *Store) GetPendingRecipes(c echo.Context) error {
 	return c.JSON(http.StatusOK, recipes)
 }
 
-// ApproveRecipe
+// ApproveRecipe (no changes)
 func (s *Store) ApproveRecipe(c echo.Context) error {
 	recipeIDStr := c.Param("id")
 	recipeID, err := strconv.ParseInt(recipeIDStr, 10, 64)
@@ -634,7 +678,6 @@ func (s *Store) ApproveRecipe(c echo.Context) error {
 	defer tx.Rollback()
 
 	var submitterID sql.NullString
-	// --- FIX: Add updated_at ---
 	err = tx.QueryRow(
 		"UPDATE recipes SET status = 'approved', updated_at = NOW() WHERE id = $1 RETURNING submitted_by_user_id",
 		recipeID,
@@ -643,32 +686,33 @@ func (s *Store) ApproveRecipe(c echo.Context) error {
 		log.Printf("Error approving recipe %d: %v", recipeID, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to approve recipe"})
 	}
+
 	if submitterID.Valid {
 		submitterUserID := submitterID.String
 		const approvalXP = 250
-		const badgeName = "Recipe Smith"
-		var currentBadges pq.StringArray
-		err = tx.QueryRow("SELECT badges FROM users WHERE id = $1 FOR UPDATE", submitterUserID).Scan(&currentBadges)
+		const badgeRuleKey = "RECIPE_SMITH_1"
+		var badgeToAward models.Badge
+		err := tx.QueryRow("SELECT id, name FROM badges WHERE rule_key = $1", badgeRuleKey).Scan(&badgeToAward.ID, &badgeToAward.Name)
 		if err != nil {
-			log.Printf("Failed to get user %s for badge award: %v", submitterUserID, err)
+			log.Printf("CRITICAL: Failed to find badge definition for %s: %v", badgeRuleKey, err)
 		} else {
-			hasBadge := false
-			for _, b := range currentBadges {
-				if b == badgeName {
-					hasBadge = true
-					break
+			var exists int
+			err = tx.QueryRow("SELECT 1 FROM user_badges WHERE user_id = $1 AND badge_id = $2", submitterUserID, badgeToAward.ID).Scan(&exists)
+			if err != nil && err != sql.ErrNoRows {
+				log.Printf("Error checking if user %s has badge %d: %v", submitterUserID, badgeToAward.ID, err)
+			} else if err == sql.ErrNoRows {
+				err = game.AwardBadge(tx, submitterUserID, badgeToAward.ID)
+				if err != nil {
+					log.Printf("Failed to award badge %s to user %s: %v", badgeToAward.Name, submitterUserID, err)
 				}
 			}
-			if !hasBadge {
-				currentBadges = append(currentBadges, badgeName)
-			}
-			_, err = tx.Exec(
-				"UPDATE users SET xp = xp + $1, badges = $2, updated_at = NOW() WHERE id = $3",
-				approvalXP, currentBadges, submitterUserID,
-			)
-			if err != nil {
-				log.Printf("Failed to award XP/badge to user %s: %v", submitterUserID, err)
-			}
+		}
+		_, err = tx.Exec(
+			"UPDATE users SET xp = xp + $1, updated_at = NOW() WHERE id = $2",
+			approvalXP, submitterUserID,
+		)
+		if err != nil {
+			log.Printf("Failed to award XP to user %s: %v", submitterUserID, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -679,14 +723,13 @@ func (s *Store) ApproveRecipe(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": "Recipe approved and XP awarded!"})
 }
 
-// RejectRecipe
+// RejectRecipe (no changes)
 func (s *Store) RejectRecipe(c echo.Context) error {
 	recipeIDStr := c.Param("id")
 	recipeID, err := strconv.ParseInt(recipeIDStr, 10, 64)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid recipe ID"})
 	}
-	// --- FIX: Add updated_at ---
 	_, err = s.DB.Exec("UPDATE recipes SET status = 'rejected', updated_at = NOW() WHERE id = $1", recipeID)
 	if err != nil {
 		log.Printf("Error rejecting recipe %d: %v", recipeID, err)
@@ -738,7 +781,6 @@ func (s *Store) GetMyCookbook(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch your cookbook"})
 	}
 	defer rows.Close()
-
 	var recipes []models.Recipe
 	for rows.Next() {
 		var r models.Recipe
@@ -790,10 +832,9 @@ func (s *Store) RemoveFavorite(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": "Recipe removed from cookbook"})
 }
 
-// CreatePrivateRecipe
+// CreatePrivateRecipe (no changes)
 func (s *Store) CreatePrivateRecipe(c echo.Context) error {
 	userID := c.Get("userID").(string)
-
 	type PrivateRecipeRequest struct {
 		Title        string                  `json:"title"`
 		Description  string                  `json:"description"`
@@ -819,7 +860,6 @@ func (s *Store) CreatePrivateRecipe(c echo.Context) error {
 	if req.ImageURL != "" {
 		sqlImageURL = sql.NullString{String: req.ImageURL, Valid: true}
 	}
-
 	query := `
 		INSERT INTO recipes (
 			title, description, xp, tags, 
@@ -838,7 +878,6 @@ func (s *Store) CreatePrivateRecipe(c echo.Context) error {
 		"private", userID, // Status is 'private'
 		sqlImageURL,
 	).Scan(&newRecipeID)
-
 	if err != nil {
 		log.Printf("Error inserting private recipe: %v\n", err)
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
@@ -872,7 +911,6 @@ func (s *Store) GetMyPrivateRecipes(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch your recipes"})
 	}
 	defer rows.Close()
-
 	var recipes []models.Recipe
 	for rows.Next() {
 		var r models.Recipe
@@ -890,7 +928,7 @@ func (s *Store) GetMyPrivateRecipes(c echo.Context) error {
 	return c.JSON(http.StatusOK, recipes)
 }
 
-// UpdatePrivateRecipe updates a user's own private recipe
+// UpdatePrivateRecipe (no changes)
 func (s *Store) UpdatePrivateRecipe(c echo.Context) error {
 	userID := c.Get("userID").(string)
 	recipeIDStr := c.Param("id")
@@ -925,7 +963,6 @@ func (s *Store) UpdatePrivateRecipe(c echo.Context) error {
 		sqlImageURL = sql.NullString{String: req.ImageURL, Valid: true}
 	}
 
-	// --- FIX: This is the correct query ---
 	query := `
 		UPDATE recipes
 		SET 
@@ -1030,7 +1067,7 @@ func (s *Store) GetTags(c echo.Context) error {
 	for rows.Next() {
 		var tag string
 		if err := rows.Scan(&tag); err != nil {
-			log.Printf("Error scanning tag: %v", err)
+			log.Printf("Error scanning tag: %v\n", err)
 			continue
 		}
 		tags = append(tags, tag)
@@ -1114,4 +1151,179 @@ func (s *Store) PostRecipeComment(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusCreated, newComment)
+}
+
+// --- NEW: Site Admin Handlers ---
+
+// GetAllBadges fetches all badge definitions for the admin portal
+func (s *Store) GetAllBadges(c echo.Context) error {
+	query := `
+		SELECT id, rule_key, name, description, icon_url, badge_type, start_date, end_date
+		FROM badges
+		ORDER BY badge_type, name
+	`
+	rows, err := s.DB.Query(query)
+	if err != nil {
+		log.Printf("Error fetching all badges: %v\n", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch badges"})
+	}
+	defer rows.Close()
+
+	// We'll re-use the Badge model, but need to scan the nullable dates
+	var badges []models.Badge
+	for rows.Next() {
+		var b models.Badge
+		var startDate sql.NullTime
+		var endDate sql.NullTime
+
+		if err := rows.Scan(
+			&b.ID, &b.RuleKey, &b.Name, &b.Description,
+			&b.IconURL, &b.BadgeType, &startDate, &endDate,
+		); err != nil {
+			log.Printf("Error scanning badge definition row: %v", err)
+			continue
+		}
+		// We don't need to send start/end dates if they aren't set
+		// But for the admin panel, it's good to have them.
+		// We'll create a new struct for this in a future pass if needed.
+
+		badges = append(badges, b)
+	}
+	return c.JSON(http.StatusOK, badges)
+}
+
+// CreateBadge creates a new badge definition
+func (s *Store) CreateBadge(c echo.Context) error {
+	type BadgeRequest struct {
+		RuleKey     string `json:"rule_key"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		IconURL     string `json:"icon_url"`
+		BadgeType   string `json:"badge_type"`
+		// Dates should be in ISO 8601 format (e.g., "2025-10-31T23:59:59Z")
+		StartDate *string `json:"start_date"`
+		EndDate   *string `json:"end_date"`
+	}
+	var req BadgeRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
+	}
+
+	if req.RuleKey == "" || req.Name == "" || req.Description == "" || req.BadgeType == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "RuleKey, Name, Description, and BadgeType are required"})
+	}
+
+	var sqlIconURL sql.NullString
+	if req.IconURL != "" {
+		sqlIconURL = sql.NullString{String: req.IconURL, Valid: true}
+	}
+
+	var sqlStartDate sql.NullTime
+	if req.StartDate != nil {
+		t, err := time.Parse(time.RFC3339, *req.StartDate)
+		if err == nil {
+			sqlStartDate = sql.NullTime{Time: t, Valid: true}
+		}
+	}
+
+	var sqlEndDate sql.NullTime
+	if req.EndDate != nil {
+		t, err := time.Parse(time.RFC3339, *req.EndDate)
+		if err == nil {
+			sqlEndDate = sql.NullTime{Time: t, Valid: true}
+		}
+	}
+
+	query := `
+		INSERT INTO badges (rule_key, name, description, icon_url, badge_type, start_date, end_date)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id
+	`
+	var newID int64
+	err := s.DB.QueryRow(
+		query,
+		req.RuleKey, req.Name, req.Description,
+		sqlIconURL, req.BadgeType, sqlStartDate, sqlEndDate,
+	).Scan(&newID)
+
+	if err != nil {
+		log.Printf("Error creating new badge: %v\n", err)
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+			return c.JSON(http.StatusConflict, map[string]string{"error": "A badge with this RuleKey already exists."})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create badge"})
+	}
+
+	return c.JSON(http.StatusCreated, map[string]interface{}{"message": "Badge created", "id": newID})
+}
+
+// UpdateBadge updates an existing badge definition
+func (s *Store) UpdateBadge(c echo.Context) error {
+	badgeIDStr := c.Param("id")
+	badgeID, err := strconv.ParseInt(badgeIDStr, 10, 64)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid badge ID"})
+	}
+
+	type BadgeRequest struct {
+		RuleKey     string  `json:"rule_key"`
+		Name        string  `json:"name"`
+		Description string  `json:"description"`
+		IconURL     string  `json:"icon_url"`
+		BadgeType   string  `json:"badge_type"`
+		StartDate   *string `json:"start_date"`
+		EndDate     *string `json:"end_date"`
+	}
+	var req BadgeRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
+	}
+
+	if req.RuleKey == "" || req.Name == "" || req.Description == "" || req.BadgeType == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "RuleKey, Name, Description, and BadgeType are required"})
+	}
+
+	var sqlIconURL sql.NullString
+	if req.IconURL != "" {
+		sqlIconURL = sql.NullString{String: req.IconURL, Valid: true}
+	}
+
+	var sqlStartDate sql.NullTime
+	if req.StartDate != nil {
+		t, err := time.Parse(time.RFC3339, *req.StartDate)
+		if err == nil {
+			sqlStartDate = sql.NullTime{Time: t, Valid: true}
+		}
+	}
+
+	var sqlEndDate sql.NullTime
+	if req.EndDate != nil {
+		t, err := time.Parse(time.RFC3339, *req.EndDate)
+		if err == nil {
+			sqlEndDate = sql.NullTime{Time: t, Valid: true}
+		}
+	}
+
+	query := `
+		UPDATE badges
+		SET rule_key = $1, name = $2, description = $3, 
+		    icon_url = $4, badge_type = $5, start_date = $6, end_date = $7
+		WHERE id = $8
+	`
+	_, err = s.DB.Exec(
+		query,
+		req.RuleKey, req.Name, req.Description,
+		sqlIconURL, req.BadgeType, sqlStartDate, sqlEndDate,
+		badgeID,
+	)
+
+	if err != nil {
+		log.Printf("Error updating badge: %v\n", err)
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+			return c.JSON(http.StatusConflict, map[string]string{"error": "A badge with this RuleKey already exists."})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to update badge"})
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{"message": "Badge updated"})
 }

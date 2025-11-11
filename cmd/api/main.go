@@ -41,7 +41,6 @@ func main() {
 	}
 
 	// 5. Create our Store and AuthHandler
-	//    (FIX: Initialize structs directly, not with New... functions)
 	s := &store.Store{
 		DB: db,
 	}
@@ -78,11 +77,11 @@ func main() {
 
 	// --- Protected Routes (Requires Auth) ---
 	protected := api.Group("")
-	protected.Use(authHandler.FirebaseMiddleware) // Standard auth
+	protected.Use(authHandler.FirebaseMiddleware)
 
-	protected.GET("/profile", s.GetProfile) // Private profile
+	protected.GET("/profile", s.GetProfile)
 	protected.POST("/recipes/:id/log", s.LogCook)
-	protected.POST("/recipes", s.SubmitRecipe) // Submit for Guild review
+	protected.POST("/recipes", s.SubmitRecipe)
 	protected.GET("/recipes/my-submissions", s.GetMySubmissions)
 
 	protected.GET("/my-favorite-ids", s.GetMyFavoriteIDs)
@@ -94,23 +93,35 @@ func main() {
 	protected.GET("/my-private-recipes", s.GetMyPrivateRecipes)
 	protected.PUT("/recipes/private/:id", s.UpdatePrivateRecipe)
 	protected.DELETE("/recipes/private/:id", s.DeletePrivateRecipe)
-	protected.POST("/recipes/private/:id/submit", s.SubmitPrivateRecipe) // <-- NEW ROUTE
+	protected.POST("/recipes/private/:id/submit", s.SubmitPrivateRecipe)
 
 	protected.POST("/recipes/:id/comments", s.PostRecipeComment)
 
-	// --- Admin Routes (Requires Auth + Admin Middleware) ---
+	// --- Admin Routes (Guild Moderator) ---
 	admin := api.Group("/admin")
-	admin.Use(authHandler.FirebaseMiddleware) // First, check if they're a user
-	admin.Use(authHandler.AdminMiddleware)    // THEN, check if they're an admin
+	admin.Use(authHandler.FirebaseMiddleware)
+	admin.Use(authHandler.AdminMiddleware)
 
 	admin.GET("/pending-recipes", s.GetPendingRecipes)
 	admin.POST("/recipes/:id/approve", s.ApproveRecipe)
 	admin.POST("/recipes/:id/reject", s.RejectRecipe)
 
+	// --- NEW: Site Admin Routes (Site Owner) ---
+	siteAdmin := api.Group("/site-admin")
+	siteAdmin.Use(authHandler.FirebaseMiddleware)
+	siteAdmin.Use(authHandler.SiteAdminMiddleware) // <-- Use new middleware
+
+	siteAdmin.GET("/badges", s.GetAllBadges)
+	siteAdmin.POST("/badges", s.CreateBadge)
+	siteAdmin.PUT("/badges/:id", s.UpdateBadge)
+	// We'll skip DELETE for now to be safe
+	// siteAdmin.DELETE("/badges/:id", s.DeleteBadge)
+	// ---
+
 	// Start the server
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080" // Default port
+		port = "8080"
 	}
 	log.Printf("Starting server on port %s", port)
 	e.Logger.Fatal(e.Start(":" + port))

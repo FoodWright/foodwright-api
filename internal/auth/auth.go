@@ -27,7 +27,6 @@ func InitFirebase(keyFilePath string) (*auth.Client, error) {
 	if keyFilePath == "" {
 		keyFilePath = "serviceAccountKey.json"
 	}
-	// Load .env file to get key path, if not provided
 	if os.Getenv("FIREBASE_SERVICE_ACCOUNT_KEY_PATH") == "" {
 		godotenv.Load()
 		keyFilePath = os.Getenv("FIREBASE_SERVICE_ACCOUNT_KEY_PATH")
@@ -91,7 +90,7 @@ func (h *AuthHandler) FirebaseMiddlewareOptional(next echo.HandlerFunc) echo.Han
 	}
 }
 
-// AdminMiddleware checks if the user (set by FirebaseMiddleware) is an admin
+// AdminMiddleware checks if the user (set by FirebaseMiddleware) is a Guild Admin
 func (h *AuthHandler) AdminMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		userID, ok := c.Get("userID").(string)
@@ -100,6 +99,7 @@ func (h *AuthHandler) AdminMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		}
 
 		var isAdmin bool
+		// Check for Guild Admin status
 		err := h.DB.QueryRow("SELECT is_admin FROM users WHERE id = $1", userID).Scan(&isAdmin)
 		if err != nil {
 			log.Printf("Admin check failed for user %s: %v", userID, err)
@@ -112,6 +112,33 @@ func (h *AuthHandler) AdminMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		}
 
 		c.Set("isAdmin", true)
+		return next(c)
+	}
+}
+
+// --- NEW: SiteAdminMiddleware ---
+// This checks for the *highest* permission level
+func (h *AuthHandler) SiteAdminMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		userID, ok := c.Get("userID").(string)
+		if !ok || userID == "" {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "User not authenticated"})
+		}
+
+		var isSiteAdmin bool
+		// Check for Site Admin status
+		err := h.DB.QueryRow("SELECT is_site_admin FROM users WHERE id = $1", userID).Scan(&isSiteAdmin)
+		if err != nil {
+			log.Printf("Site Admin check failed for user %s: %v", userID, err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Error checking user permissions"})
+		}
+
+		if !isSiteAdmin {
+			log.Printf("Site Admin access denied for user %s", userID)
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "Site Admin access required"})
+		}
+
+		c.Set("isSiteAdmin", true)
 		return next(c)
 	}
 }

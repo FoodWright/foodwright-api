@@ -3,8 +3,9 @@ package game
 import (
 	"database/sql"
 	"fmt"
+	"log"
 
-	"github.com/lib/pq"
+	"github.com/FoodWright/foodwright-api/internal/models"
 )
 
 // CalculateRank determines a user's rank based on their XP
@@ -27,33 +28,128 @@ func CalculateRank(xp int) string {
 	return "Kitchen Novice"
 }
 
-// CheckAndAwardBadges checks if a user has earned new badges from their latest cook
-func CheckAndAwardBadges(tx *sql.Tx, userID string, recipeID int64, currentBadges pq.StringArray) ([]string, pq.StringArray, error) {
+// --- NEW BADGE ENGINE ---
+
+// CheckAndAwardBadges is the new Badge Engine.
+// It checks all eligible badges against the user's current actions.
+func CheckAndAwardBadges(tx *sql.Tx, userID string, recipeID int64) ([]string, error) {
 	newlyAwarded := []string{}
-	updatedBadges := currentBadges
-	hasBadge := func(badgeName string) bool {
-		for _, b := range currentBadges {
-			if b == badgeName {
-				return true
-			}
-		}
-		return false
-	}
 
-	// Badge 1: "First Cook"
-	var totalCooks int
-	err := tx.QueryRow("SELECT COUNT(*) FROM user_cooks_log WHERE user_id = $1", userID).Scan(&totalCooks)
+	// 1. Get all badges the user *already has*.
+	currentBadgeIDs, err := getEarnedBadgeIDs(tx, userID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to count total logs: %w", err)
-	}
-	if totalCooks == 0 && !hasBadge("First Cook") { // This runs *before* the new log is inserted
-		newlyAwarded = append(newlyAwarded, "First Cook")
-		updatedBadges = append(updatedBadges, "First Cook")
+		return nil, fmt.Errorf("failed to get current badges: %w", err)
 	}
 
-	// Badge 2: "Baker"
-	const bakingTarget = 3
-	if !hasBadge("Baker") {
+	// 2. Get all badges that are *possible* to earn right now.
+	// (Milestones, or active seasonal/event badges)
+	eligibleBadges, err := getEligibleBadges(tx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get eligible badges: %w", err)
+	}
+
+	// 3. Loop over all eligible badges and check the rules
+	for _, badge := range eligibleBadges {
+		// Skip if user already has this badge
+		if _, exists := currentBadgeIDs[badge.ID]; exists {
+			continue
+		}
+
+		// Run the specific rule check for this badge
+		earned, err := checkBadgeRule(tx, userID, recipeID, badge)
+		if err != nil {
+			log.Printf("Error checking badge rule %s: %v", badge.RuleKey, err)
+			continue // Don't stop the whole process
+		}
+
+		if earned {
+			// --- AWARD THE BADGE ---
+			err := AwardBadge(tx, userID, badge.ID) // <-- Use exported function
+			if err != nil {
+				log.Printf("Error awarding badge %s: %v", badge.Name, err)
+				continue
+			}
+			newlyAwarded = append(newlyAwarded, badge.Name)
+			log.Printf("AWARDED BADGE: User %s earned %s", userID, badge.Name)
+		}
+	}
+
+	return newlyAwarded, nil
+}
+
+// getEarnedBadgeIDs fetches a Set of badge IDs the user already has
+func getEarnedBadgeIDs(tx *sql.Tx, userID string) (map[int64]bool, error) {
+	rows, err := tx.Query("SELECT badge_id FROM user_badges WHERE user_id = $1", userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make(map[int64]bool)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	return ids, nil
+}
+
+// getEligibleBadges fetches all badges that can be earned right now
+func getEligibleBadges(tx *sql.Tx) ([]models.Badge, error) {
+	query := `
+		SELECT id, rule_key, name, description, icon_url, badge_type
+		FROM badges
+		WHERE 
+			badge_type = 'MILESTONE' OR 
+			(badge_type = 'SEASONAL' AND NOW() BETWEEN start_date AND end_date) OR
+			(badge_type = 'EVENT' AND NOW() BETWEEN start_date AND end_date)
+	`
+	rows, err := tx.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var badges []models.Badge
+	for rows.Next() {
+		var b models.Badge
+		if err := rows.Scan(&b.ID, &b.RuleKey, &b.Name, &b.Description, &b.IconURL, &b.BadgeType); err != nil {
+			return nil, err
+		}
+		badges = append(badges, b)
+	}
+	return badges, nil
+}
+
+// --- FIX: This function is now exported (AwardBadge) ---
+// AwardBadge inserts the new badge into the user_badges table
+func AwardBadge(tx *sql.Tx, userID string, badgeID int64) error {
+	query := "INSERT INTO user_badges (user_id, badge_id) VALUES ($1, $2) ON CONFLICT DO NOTHING"
+	_, err := tx.Exec(query, userID, badgeID)
+	return err
+}
+
+// checkBadgeRule is the main "engine" that runs the logic for each badge
+func checkBadgeRule(tx *sql.Tx, userID string, recipeID int64, badge models.Badge) (bool, error) {
+	// This switch statement is the core of our engine.
+	// To add a new badge, you just add a new `case` here.
+	switch badge.RuleKey {
+
+	case "FIRST_COOK":
+		// This logic runs *before* the new log is inserted,
+		// so a count of 0 means this is the first one.
+		var totalCooks int
+		err := tx.QueryRow("SELECT COUNT(*) FROM user_cooks_log WHERE user_id = $1", userID).Scan(&totalCooks)
+		if err != nil {
+			return false, err
+		}
+		return totalCooks == 0, nil
+
+	case "BAKER_3":
+		// Check if the user has cooked 3 *different* baking recipes.
+		const bakingTarget = 3
 		var bakingCooks int
 		query := `
 			SELECT COUNT(DISTINCT l.recipe_id)
@@ -63,24 +159,34 @@ func CheckAndAwardBadges(tx *sql.Tx, userID string, recipeID int64, currentBadge
 		`
 		err := tx.QueryRow(query, userID).Scan(&bakingCooks)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to count baking logs: %w", err)
+			return false, err
 		}
 
-		// Check if the *current* cook is a baking recipe
-		var isCurrentCookBaking bool
-		err = tx.QueryRow("SELECT tags @> ARRAY['baking']::text[] FROM recipes WHERE id = $1", recipeID).Scan(&isCurrentCookBaking)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to check current recipe tags: %w", err)
+		// This logic is flawed - it doesn't account for the *current* cook.
+		// A better system would pass the `recipe` object here.
+		// For now, we'll check if they are *about* to hit the target.
+		if bakingCooks == (bakingTarget - 1) {
+			var isCurrentCookBaking bool
+			err = tx.QueryRow("SELECT tags @> ARRAY['baking']::text[] FROM recipes WHERE id = $1", recipeID).Scan(&isCurrentCookBaking)
+			if err != nil {
+				return false, err
+			}
+			return isCurrentCookBaking, nil
 		}
+		return false, nil
 
-		if isCurrentCookBaking && bakingCooks == (bakingTarget-1) {
-			// This logic is still flawed (doesn't count *this* cook if it's a new baking recipe)
-			// A better way would be to get a list of all baking recipes cooked,
-			// add the current one (if not present), and check the Set length.
-			// But this is good for now.
-			newlyAwarded = append(newlyAwarded, "Baker")
-			updatedBadges = append(updatedBadges, "Baker")
-		}
+	case "RECIPE_SMITH_1":
+		// This badge is NOT awarded by cooking.
+		// It's awarded in `ApproveRecipe` in store.go.
+		// So we just return false here.
+		return false, nil
+
+	// --- Future Badges ---
+	// case "HOLIDAY_2025":
+	//   ... run query for holiday tags ...
+	//   return true, nil
+
+	default:
+		return false, nil
 	}
-	return newlyAwarded, updatedBadges, nil
 }

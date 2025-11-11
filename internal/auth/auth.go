@@ -11,6 +11,7 @@ import (
 
 	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/auth"
+	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
 	"google.golang.org/api/option"
 )
@@ -21,20 +22,20 @@ type AuthHandler struct {
 	DB     *sql.DB
 }
 
-// NewAuthHandler creates a new AuthHandler
-func NewAuthHandler(fbAuth *auth.Client, db *sql.DB) *AuthHandler {
-	return &AuthHandler{
-		FBAuth: fbAuth,
-		DB:     db,
-	}
-}
-
 // InitFirebase initializes the Firebase app and auth client
-func InitFirebase() (*auth.Client, error) {
-	keyFilePath := os.Getenv("FIREBASE_SERVICE_ACCOUNT_KEY_PATH")
+func InitFirebase(keyFilePath string) (*auth.Client, error) {
 	if keyFilePath == "" {
 		keyFilePath = "serviceAccountKey.json"
 	}
+	// Load .env file to get key path, if not provided
+	if os.Getenv("FIREBASE_SERVICE_ACCOUNT_KEY_PATH") == "" {
+		godotenv.Load()
+		keyFilePath = os.Getenv("FIREBASE_SERVICE_ACCOUNT_KEY_PATH")
+		if keyFilePath == "" {
+			keyFilePath = "serviceAccountKey.json"
+		}
+	}
+
 	opt := option.WithCredentialsFile(keyFilePath)
 	app, err := firebase.NewApp(context.Background(), nil, opt)
 	if err != nil {

@@ -20,26 +20,35 @@ func main() {
 	}
 
 	// 2. Initialize Firebase
-	fbAuth, err := auth.InitFirebase()
+	fbAuth, err := auth.InitFirebase(os.Getenv("FIREBASE_SERVICE_ACCOUNT_KEY_PATH"))
 	if err != nil {
 		log.Fatalf("Failed to initialize Firebase: %v", err)
 	}
 
 	// 3. Initialize Database
-	db, err := store.InitDB()
+	db, err := store.InitDB(os.Getenv("NEON_DATABASE_URL"))
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.Close()
 
 	// 4. Run Migrations
-	if err := store.RunMigrations(db); err != nil {
+	err = store.RunMigrations(db, os.Getenv("MIGRATIONS_PATH"))
+	if err != nil && err.Error() != "no change" {
 		log.Printf("Migration error: %v", err)
+	} else if err != nil && err.Error() == "no change" {
+		log.Println("Database migrations: no change.")
 	}
 
-	// 5. Create our Store (which holds DB) and AuthHandler
-	s := store.NewStore(db)
-	authHandler := auth.NewAuthHandler(fbAuth, db)
+	// 5. Create our Store and AuthHandler
+	//    (FIX: Initialize structs directly, not with New... functions)
+	s := &store.Store{
+		DB: db,
+	}
+	authHandler := &auth.AuthHandler{
+		FBAuth: fbAuth,
+		DB:     db,
+	}
 
 	// 6. Initialize Echo
 	e := echo.New()
@@ -48,7 +57,7 @@ func main() {
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: []string{"http://localhost:9000"},
+		AllowOrigins: []string{"http://localhost:9000", "https://foodwright.com"},
 		AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization},
 		AllowMethods: []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodPatch, http.MethodPost, http.MethodDelete},
 	}))
@@ -61,9 +70,11 @@ func main() {
 	// --- Public Routes ---
 	api.GET("/recipes", s.GetRecipes)
 	api.GET("/recipes/:id/logs", s.GetCookLogsForRecipe)
-	api.GET("/recipes/:id", s.GetRecipeByID, authHandler.FirebaseMiddlewareOptional) // Needs optional auth
+	api.GET("/recipes/:id", s.GetRecipeByID, authHandler.FirebaseMiddlewareOptional)
 	api.GET("/profile/:id", s.GetPublicProfile)
 	api.GET("/profile/:id/logs", s.GetPublicCookLogs)
+	api.GET("/tags", s.GetTags)
+	api.GET("/recipes/:id/comments", s.GetRecipeComments)
 
 	// --- Protected Routes (Requires Auth) ---
 	protected := api.Group("")
@@ -83,6 +94,9 @@ func main() {
 	protected.GET("/my-private-recipes", s.GetMyPrivateRecipes)
 	protected.PUT("/recipes/private/:id", s.UpdatePrivateRecipe)
 	protected.DELETE("/recipes/private/:id", s.DeletePrivateRecipe)
+	protected.POST("/recipes/private/:id/submit", s.SubmitPrivateRecipe) // <-- NEW ROUTE
+
+	protected.POST("/recipes/:id/comments", s.PostRecipeComment)
 
 	// --- Admin Routes (Requires Auth + Admin Middleware) ---
 	admin := api.Group("/admin")

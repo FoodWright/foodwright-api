@@ -21,17 +21,17 @@ type Ingredient struct {
 // IngredientsList is a slice of Ingredient that implements sql.Scanner and driver.Valuer
 type IngredientsList []Ingredient
 
-// Value implements the driver.Valuer interface
+// Value implements the driver.Valuer interface, converting our list to JSON
 func (il IngredientsList) Value() (driver.Value, error) {
 	if il == nil {
 		il = []Ingredient{} // Ensure '[]' instead of 'null'
 	}
-	// Return string, not []byte
+	// --- FIX: Return string, not []byte ---
 	data, err := json.Marshal(il)
 	return string(data), err
 }
 
-// Scan implements the sql.Scanner interface
+// Scan implements the sql.Scanner interface, converting JSON from DB to our list
 func (il *IngredientsList) Scan(value interface{}) error {
 	b, ok := value.([]byte)
 	if !ok {
@@ -57,7 +57,7 @@ func (il InstructionsList) Value() (driver.Value, error) {
 	if il == nil {
 		il = []Instruction{} // Ensure '[]' instead of 'null'
 	}
-	// Return string, not []byte
+	// --- FIX: Return string, not []byte ---
 	data, err := json.Marshal(il)
 	return string(data), err
 }
@@ -79,7 +79,6 @@ func (il *InstructionsList) Scan(value interface{}) error {
 
 // --- Model Structs ---
 
-// Recipe holds all data for a single recipe
 type Recipe struct {
 	ID                  int64            `json:"id"`
 	Title               string           `json:"title"`
@@ -92,9 +91,15 @@ type Recipe struct {
 	SubmittedByUsername sql.NullString   `json:"submitted_by_username"`
 	Ingredients         IngredientsList  `json:"ingredients"`
 	Instructions        InstructionsList `json:"instructions"`
+	ImageURL            sql.NullString   `json:"image_url"` // <-- NEW FIELD
 }
 
-// DBUserCookLog is the raw struct from the database
+type PaginatedRecipes struct {
+	Recipes     []Recipe `json:"recipes"`
+	TotalPages  int      `json:"total_pages"`
+	CurrentPage int      `json:"current_page"`
+}
+
 type DBUserCookLog struct {
 	ID        int64
 	UserID    string
@@ -104,7 +109,6 @@ type DBUserCookLog struct {
 	CreatedAt time.Time
 }
 
-// CleanCookLog is the struct we send to the frontend (with clean JSON)
 type CleanCookLog struct {
 	ID        int64     `json:"id"`
 	UserID    string    `json:"user_id"`
@@ -114,7 +118,15 @@ type CleanCookLog struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// UserProfile struct (for logged-in user)
+type RecipeComment struct {
+	ID        int64     `json:"id"`
+	RecipeID  int64     `json:"recipe_id"`
+	UserID    string    `json:"user_id"`
+	Username  string    `json:"username"`
+	Comment   string    `json:"comment"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type UserProfile struct {
 	ID        string         `json:"id"`
 	Username  string         `json:"username"`
@@ -126,7 +138,6 @@ type UserProfile struct {
 	UpdatedAt time.Time      `json:"updated_at"`
 }
 
-// PublicUserProfile struct (for public viewing)
 type PublicUserProfile struct {
 	ID        string         `json:"id"`
 	Username  string         `json:"username"`
@@ -136,7 +147,6 @@ type PublicUserProfile struct {
 	CreatedAt time.Time      `json:"created_at"`
 }
 
-// PublicCookLog struct (for public viewing)
 type PublicCookLog struct {
 	LogID       int64     `json:"log_id"`
 	RecipeID    int64     `json:"recipe_id"`

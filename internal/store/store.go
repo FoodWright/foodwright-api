@@ -23,7 +23,9 @@ type Store struct {
 // InitDB initializes the database connection
 func InitDB(connStr string) (*sql.DB, error) {
 	if connStr == "" {
-		godotenv.Load()
+		if err := godotenv.Load(); err != nil {
+			log.Println("No .env file found or error loading it, relying on environment variables.")
+		}
 		connStr = os.Getenv("NEON_DATABASE_URL")
 	}
 	if connStr == "" {

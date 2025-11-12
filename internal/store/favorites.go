@@ -41,7 +41,9 @@ func (s *Store) GetMyCookbook(c echo.Context) error {
 			r.status, r.submitted_by_user_id, u.username AS submitted_by_username,
 			r.ingredients, r.instructions, r.image_url,
 			COALESCE(AVG(l.rating), 0) AS avg_rating,
-			COUNT(l.id) AS cook_count
+			COUNT(l.id) AS cook_count,
+			r.is_featured,
+			r.slug
 		FROM recipes r
 		JOIN user_favorites f ON r.id = f.recipe_id
 		LEFT JOIN users u ON r.submitted_by_user_id = u.id
@@ -64,7 +66,7 @@ func (s *Store) GetMyCookbook(c echo.Context) error {
 			&r.CreatedAt, &r.Status, &r.SubmittedByUserID,
 			&r.SubmittedByUsername,
 			&r.Ingredients, &r.Instructions, &r.ImageURL,
-			&r.AvgRating, &r.CookCount, // <-- NEW
+			&r.AvgRating, &r.CookCount, &r.IsFeatured, &r.Slug,
 		); err != nil {
 			log.Printf("Error scanning recipe row: %v\n", err)
 			continue

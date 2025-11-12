@@ -129,7 +129,7 @@ func (s *Store) CreateBadge(c echo.Context) error {
 	if err != nil {
 		log.Printf("Error creating new badge: %v\n", err)
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
-			return c.JSON(http.StatusConflict, map[string]string{"error": "A badge with this RuleKey already exists."} )
+			return c.JSON(http.StatusConflict, map[string]string{"error": "A badge with this RuleKey already exists."})
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create badge"})
 	}
@@ -200,10 +200,33 @@ func (s *Store) UpdateBadge(c echo.Context) error {
 	if err != nil {
 		log.Printf("Error updating badge: %v\n", err)
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
-			return c.JSON(http.StatusConflict, map[string]string{"error": "A badge with this RuleKey already exists."} )
+			return c.JSON(http.StatusConflict, map[string]string{"error": "A badge with this RuleKey already exists."})
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to update badge"})
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"message": "Badge updated"})
+}
+
+// ToggleRecipeFeature allows a site admin to mark/unmark a recipe as featured.
+func (s *Store) ToggleRecipeFeature(c echo.Context) error {
+	recipeIDStr := c.Param("id")
+	recipeID, err := strconv.ParseInt(recipeIDStr, 10, 64)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid recipe ID"})
+	}
+
+	var isFeatured bool
+	query := "UPDATE recipes SET is_featured = NOT is_featured WHERE id = $1 RETURNING is_featured"
+	err = s.DB.QueryRow(query, recipeID).Scan(&isFeatured)
+	if err != nil {
+		log.Printf("Error toggling featured status for recipe %d: %v", recipeID, err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to update recipe"})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message":     "Featured status updated",
+		"id":          recipeID,
+		"is_featured": isFeatured,
+	})
 }

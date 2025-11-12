@@ -4,9 +4,26 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"regexp"
+	"strings"
 
 	"github.com/FoodWright/foodwright-api/internal/models"
 )
+
+var (
+	nonAlphanumericRegex = regexp.MustCompile(`[^a-zA-Z0-9\s-]`)
+	spaceRegex           = regexp.MustCompile(`[\s-]+`)
+)
+
+// Slugify creates a URL-friendly slug from a title
+func Slugify(title string) string {
+	// 1. Remove all non-alphanumeric chars
+	s := nonAlphanumericRegex.ReplaceAllString(title, "")
+	// 2. Replace spaces/hyphens with a single hyphen
+	s = spaceRegex.ReplaceAllString(s, "-")
+	// 3. Convert to lowercase
+	return strings.ToLower(s)
+}
 
 // CalculateRank determines a user's rank based on their XP
 func CalculateRank(xp int) string {

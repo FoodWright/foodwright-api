@@ -47,9 +47,9 @@ func (s *Store) GetCookLogsForRecipe(c echo.Context) error {
 	for i, dbLog := range dbLogs {
 		cleanLogs[i] = models.CleanCookLog{
 			ID:        dbLog.ID,
-				UserID:    dbLog.UserID,
-				Username:  dbLog.Username,
-				CreatedAt: dbLog.CreatedAt,
+			UserID:    dbLog.UserID,
+			Username:  dbLog.Username,
+			CreatedAt: dbLog.CreatedAt,
 		}
 		if dbLog.Rating.Valid {
 			cleanLogs[i].Rating = &dbLog.Rating.Int64

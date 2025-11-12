@@ -78,6 +78,9 @@ type Recipe struct {
 	Ingredients         IngredientsList  `json:"ingredients"`
 	Instructions        InstructionsList `json:"instructions"`
 	ImageURL            sql.NullString   `json:"image_url"`
+	// --- NEW FIELDS ---
+	AvgRating float64 `json:"avg_rating"`
+	CookCount int     `json:"cook_count"`
 }
 
 type PaginatedRecipes struct {
@@ -113,8 +116,6 @@ type RecipeComment struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// --- NEW: Badge Struct ---
-// Represents a badge definition
 type Badge struct {
 	ID          int64          `json:"id"`
 	RuleKey     string         `json:"rule_key"`
@@ -122,29 +123,27 @@ type Badge struct {
 	Description string         `json:"description"`
 	IconURL     sql.NullString `json:"icon_url"`
 	BadgeType   string         `json:"badge_type"`
-	EarnedAt    sql.NullTime   `json:"earned_at,omitempty"` // Only used when attached to a user
+	EarnedAt    sql.NullTime   `json:"earned_at,omitempty"`
 }
 
-// UserProfile (for logged-in user)
 type UserProfile struct {
 	ID          string    `json:"id"`
 	Username    string    `json:"username"`
 	Rank        string    `json:"rank"`
 	XP          int       `json:"xp"`
-	Badges      []Badge   `json:"badges"` // <-- MODIFIED
+	Badges      []Badge   `json:"badges"`
 	IsAdmin     bool      `json:"is_admin"`
-	IsSiteAdmin bool      `json:"is_site_admin"` // <-- NEW
+	IsSiteAdmin bool      `json:"is_site_admin"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-// PublicUserProfile (for public viewing)
 type PublicUserProfile struct {
 	ID        string    `json:"id"`
 	Username  string    `json:"username"`
 	Rank      string    `json:"rank"`
 	XP        int       `json:"xp"`
-	Badges    []Badge   `json:"badges"` // <-- MODIFIED
+	Badges    []Badge   `json:"badges"`
 	CreatedAt time.Time `json:"created_at"`
 }
 

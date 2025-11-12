@@ -7,13 +7,14 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// GetTags fetches a distinct, sorted list of all tags used in approved recipes.
+// GetTags fetches a distinct, sorted list of all *pre-defined* tags.
 func (s *Store) GetTags(c echo.Context) error {
+	// --- MODIFIED QUERY ---
+	// Read from the new 'tags' table instead of scanning all recipes
 	query := `
-		SELECT DISTINCT unnest(tags) AS tag 
-		FROM recipes 
-		WHERE status = 'approved' AND cardinality(tags) > 0
-		ORDER BY tag
+		SELECT name 
+		FROM tags
+		ORDER BY name
 	`
 	rows, err := s.DB.Query(query)
 	if err != nil {

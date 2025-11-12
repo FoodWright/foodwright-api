@@ -34,15 +34,20 @@ func (s *Store) GetMyFavoriteIDs(c echo.Context) error {
 // GetMyCookbook fetches the full recipe details for all of the user's favorited recipes.
 func (s *Store) GetMyCookbook(c echo.Context) error {
 	userID := c.Get("userID").(string)
+	// --- MODIFIED: Added LEFT JOIN for logs and GROUP BY ---
 	query := `
 		SELECT 
 			r.id, r.title, r.description, r.xp, r.tags, r.created_at, 
 			r.status, r.submitted_by_user_id, u.username AS submitted_by_username,
-			r.ingredients, r.instructions, r.image_url
+			r.ingredients, r.instructions, r.image_url,
+			COALESCE(AVG(l.rating), 0) AS avg_rating,
+			COUNT(l.id) AS cook_count
 		FROM recipes r
 		JOIN user_favorites f ON r.id = f.recipe_id
 		LEFT JOIN users u ON r.submitted_by_user_id = u.id
+		LEFT JOIN user_cooks_log l ON r.id = l.recipe_id
 		WHERE f.user_id = $1 AND r.status = 'approved'
+		GROUP BY r.id, u.username, f.created_at
 		ORDER BY f.created_at DESC
 	`
 	rows, err := s.DB.Query(query, userID)
@@ -59,6 +64,7 @@ func (s *Store) GetMyCookbook(c echo.Context) error {
 			&r.CreatedAt, &r.Status, &r.SubmittedByUserID,
 			&r.SubmittedByUsername,
 			&r.Ingredients, &r.Instructions, &r.ImageURL,
+			&r.AvgRating, &r.CookCount, // <-- NEW
 		); err != nil {
 			log.Printf("Error scanning recipe row: %v\n", err)
 			continue

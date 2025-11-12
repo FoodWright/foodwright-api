@@ -67,6 +67,7 @@ func main() {
 
 	// --- Public Routes ---
 	api.GET("/recipes", s.GetRecipes)
+	api.GET("/recipes/featured", s.GetFeaturedRecipes)
 	api.GET("/recipes/:id/logs", s.GetCookLogsForRecipe)
 	api.GET("/recipes/:id", s.GetRecipeByID, authHandler.FirebaseMiddlewareOptional)
 	api.GET("/profile/:id", s.GetPublicProfile)
@@ -113,6 +114,7 @@ func main() {
 	siteAdmin.GET("/badges", s.GetAllBadges)
 	siteAdmin.POST("/badges", s.CreateBadge)
 	siteAdmin.PUT("/badges/:id", s.UpdateBadge)
+	siteAdmin.POST("/recipes/:id/toggle-feature", s.ToggleRecipeFeature)
 	// We'll skip DELETE for now to be safe
 	// siteAdmin.DELETE("/badges/:id", s.DeleteBadge)
 	// ---

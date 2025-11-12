@@ -27,7 +27,6 @@ func (s *Store) GetRecipes(c echo.Context) error {
 	const limit = 12
 	offset := (page - 1) * limit
 
-	// --- MODIFIED: Added LEFT JOIN for logs and GROUP BY ---
 	baseQuery := `
 		FROM recipes r
 		LEFT JOIN users u ON r.submitted_by_user_id = u.id
@@ -44,10 +43,13 @@ func (s *Store) GetRecipes(c echo.Context) error {
 			r.status, r.submitted_by_user_id, u.username AS submitted_by_username,
 			r.ingredients, r.instructions, r.image_url,
 			COALESCE(AVG(l.rating), 0) AS avg_rating,
-			COUNT(l.id) AS cook_count
+			COUNT(l.id) AS cook_count,
+			r.is_featured,
+			r.slug
 	` + baseQuery
 
-	whereClauses := []string{"r.status = 'approved'"}
+	// --- MODIFIED: Filter out featured recipes from the main list ---
+	whereClauses := []string{"r.status = 'approved'", "r.is_featured = FALSE"}
 	args := []interface{}{}
 	argCount := 1
 
@@ -69,7 +71,6 @@ func (s *Store) GetRecipes(c echo.Context) error {
 	countQuery += fullWhere
 	recipesQuery += fullWhere
 
-	// --- MODIFIED: Added GROUP BY ---
 	recipesQuery += " GROUP BY r.id, u.username"
 	recipesQuery += " ORDER BY r.created_at DESC"
 	recipesQuery += fmt.Sprintf(" LIMIT $%d OFFSET $%d", argCount, argCount+1)
@@ -101,7 +102,8 @@ func (s *Store) GetRecipes(c echo.Context) error {
 			&r.CreatedAt, &r.Status, &r.SubmittedByUserID,
 			&r.SubmittedByUsername,
 			&r.Ingredients, &r.Instructions, &r.ImageURL,
-			&r.AvgRating, &r.CookCount, // <-- NEW
+			&r.AvgRating, &r.CookCount,
+			&r.IsFeatured, &r.Slug, // <-- UPDATED
 		); err != nil {
 			log.Printf("Error scanning recipe row: %v\n", err)
 			continue
@@ -117,23 +119,71 @@ func (s *Store) GetRecipes(c echo.Context) error {
 	return c.JSON(http.StatusOK, response)
 }
 
-// GetRecipeByID fetches a single recipe by its ID, handling private recipe access control.
-func (s *Store) GetRecipeByID(c echo.Context) error {
-	idStr := c.Param("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid recipe ID"})
-	}
-	currentUserID, _ := c.Get("userID").(string)
-
-	// --- MODIFIED: Added LEFT JOIN for logs and GROUP BY ---
+// --- NEW: GetFeaturedRecipes ---
+// GetFeaturedRecipes fetches all approved recipes marked as "is_featured"
+func (s *Store) GetFeaturedRecipes(c echo.Context) error {
 	query := `
 		SELECT 
 			r.id, r.title, r.description, r.xp, r.tags, r.created_at, 
 			r.status, r.submitted_by_user_id, u.username AS submitted_by_username,
 			r.ingredients, r.instructions, r.image_url,
 			COALESCE(AVG(l.rating), 0) AS avg_rating,
-			COUNT(l.id) AS cook_count
+			COUNT(l.id) AS cook_count,
+			r.is_featured,
+			r.slug
+		FROM recipes r
+		LEFT JOIN users u ON r.submitted_by_user_id = u.id
+		LEFT JOIN user_cooks_log l ON r.id = l.recipe_id
+		WHERE r.is_featured = TRUE AND r.status = 'approved'
+		GROUP BY r.id, u.username
+		ORDER BY r.updated_at DESC
+	`
+	rows, err := s.DB.Query(query)
+	if err != nil {
+		log.Printf("Error querying featured recipes: %v\n", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch recipes"})
+	}
+	defer rows.Close()
+
+	var recipes []models.Recipe
+	for rows.Next() {
+		var r models.Recipe
+		if err := rows.Scan(
+			&r.ID, &r.Title, &r.Description, &r.XP, &r.Tags,
+			&r.CreatedAt, &r.Status, &r.SubmittedByUserID,
+			&r.SubmittedByUsername,
+			&r.Ingredients, &r.Instructions, &r.ImageURL,
+			&r.AvgRating, &r.CookCount, &r.IsFeatured, &r.Slug,
+		); err != nil {
+			log.Printf("Error scanning featured recipe row: %v\n", err)
+			continue
+		}
+		recipes = append(recipes, r)
+	}
+	return c.JSON(http.StatusOK, recipes)
+}
+
+// GetRecipeByID fetches a single recipe by its ID, handling private recipe access control.
+func (s *Store) GetRecipeByID(c echo.Context) error {
+	// --- MODIFIED: Parse ID from slug ---
+	idStr := c.Param("id") // This will be "9" or "9-simple-sourdough"
+	idParts := strings.SplitN(idStr, "-", 2)
+	id, err := strconv.ParseInt(idParts[0], 10, 64) // Parse just the "9"
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid recipe ID"})
+	}
+	// ---
+	currentUserID, _ := c.Get("userID").(string)
+
+	query := `
+		SELECT 
+			r.id, r.title, r.description, r.xp, r.tags, r.created_at, 
+			r.status, r.submitted_by_user_id, u.username AS submitted_by_username,
+			r.ingredients, r.instructions, r.image_url,
+			COALESCE(AVG(l.rating), 0) AS avg_rating,
+			COUNT(l.id) AS cook_count,
+			r.is_featured,
+			r.slug
 		FROM recipes r
 		LEFT JOIN users u ON r.submitted_by_user_id = u.id
 		LEFT JOIN user_cooks_log l ON r.id = l.recipe_id
@@ -148,7 +198,8 @@ func (s *Store) GetRecipeByID(c echo.Context) error {
 		&r.CreatedAt, &r.Status, &r.SubmittedByUserID,
 		&r.SubmittedByUsername,
 		&r.Ingredients, &r.Instructions, &r.ImageURL,
-		&r.AvgRating, &r.CookCount, // <-- NEW
+		&r.AvgRating, &r.CookCount,
+		&r.IsFeatured, &r.Slug, // <-- UPDATED
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "Recipe not found"})
@@ -165,7 +216,7 @@ func (s *Store) GetRecipeByID(c echo.Context) error {
 	return c.JSON(http.StatusOK, r)
 }
 
-// SubmitRecipe (no changes)
+// SubmitRecipe
 func (s *Store) SubmitRecipe(c echo.Context) error {
 	userID := c.Get("userID").(string)
 	type SubmitRecipeRequest struct {
@@ -198,14 +249,17 @@ func (s *Store) SubmitRecipe(c echo.Context) error {
 		sqlImageURL = sql.NullString{String: req.ImageURL, Valid: true}
 	}
 
+	// --- MODIFIED: Add slug ---
+	slug := game.Slugify(req.Title)
 	query := `
 		INSERT INTO recipes (
 			title, description, xp, tags, 
 			ingredients, instructions, 
 			status, submitted_by_user_id,
-			image_url, created_at, updated_at
+			image_url, created_at, updated_at,
+			slug
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW(), $10)
 		RETURNING id
 	`
 	var newRecipeID int64
@@ -215,7 +269,9 @@ func (s *Store) SubmitRecipe(c echo.Context) error {
 		req.Ingredients, req.Instructions,
 		"pending", userID,
 		sqlImageURL,
+		slug, // <-- Pass slug
 	).Scan(&newRecipeID)
+	// ---
 	if err != nil {
 		log.Printf("Error inserting submitted recipe: pretty%v\n", err)
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
@@ -233,14 +289,15 @@ func (s *Store) SubmitRecipe(c echo.Context) error {
 // GetMySubmissions fetches all recipes submitted by the currently authenticated user.
 func (s *Store) GetMySubmissions(c echo.Context) error {
 	userID := c.Get("userID").(string)
-	// --- MODIFIED: Added LEFT JOIN for logs and GROUP BY ---
 	query := `
 		SELECT 
 			r.id, r.title, r.description, r.xp, r.tags, r.created_at, 
 			r.status, r.submitted_by_user_id, u.username AS submitted_by_username,
 			r.ingredients, r.instructions, r.image_url,
 			COALESCE(AVG(l.rating), 0) AS avg_rating,
-			COUNT(l.id) AS cook_count
+			COUNT(l.id) AS cook_count,
+			r.is_featured,
+			r.slug
 		FROM recipes r
 		LEFT JOIN users u ON r.submitted_by_user_id = u.id
 		LEFT JOIN user_cooks_log l ON r.id = l.recipe_id
@@ -263,7 +320,8 @@ func (s *Store) GetMySubmissions(c echo.Context) error {
 			&r.CreatedAt, &r.Status, &r.SubmittedByUserID,
 			&r.SubmittedByUsername,
 			&r.Ingredients, &r.Instructions, &r.ImageURL,
-			&r.AvgRating, &r.CookCount, // <-- NEW
+			&r.AvgRating, &r.CookCount,
+			&r.IsFeatured, &r.Slug, // <-- UPDATED
 		); err != nil {
 			log.Printf("Error scanning recipe row: pretty%v\n", err)
 			continue
@@ -275,14 +333,15 @@ func (s *Store) GetMySubmissions(c echo.Context) error {
 
 // GetPendingRecipes fetches all recipes with a 'pending' status for admin review.
 func (s *Store) GetPendingRecipes(c echo.Context) error {
-	// --- MODIFIED: Added LEFT JOIN for logs and GROUP BY ---
 	query := `
 		SELECT 
 			r.id, r.title, r.description, r.xp, r.tags, r.created_at, 
 			r.status, r.submitted_by_user_id, u.username AS submitted_by_username,
 			r.ingredients, r.instructions, r.image_url,
 			COALESCE(AVG(l.rating), 0) AS avg_rating,
-			COUNT(l.id) AS cook_count
+			COUNT(l.id) AS cook_count,
+			r.is_featured,
+			r.slug
 		FROM recipes r
 		LEFT JOIN users u ON r.submitted_by_user_id = u.id
 		LEFT JOIN user_cooks_log l ON r.id = l.recipe_id
@@ -305,7 +364,8 @@ func (s *Store) GetPendingRecipes(c echo.Context) error {
 			&r.CreatedAt, &r.Status, &r.SubmittedByUserID,
 			&r.SubmittedByUsername,
 			&r.Ingredients, &r.Instructions, &r.ImageURL,
-			&r.AvgRating, &r.CookCount, // <-- NEW
+			&r.AvgRating, &r.CookCount,
+			&r.IsFeatured, &r.Slug, // <-- UPDATED
 		); err != nil {
 			log.Printf("Error scanning recipe row: pretty%v\n", err)
 			continue
@@ -315,7 +375,7 @@ func (s *Store) GetPendingRecipes(c echo.Context) error {
 	return c.JSON(http.StatusOK, recipes)
 }
 
-// ApproveRecipe (no changes)
+// ApproveRecipe
 func (s *Store) ApproveRecipe(c echo.Context) error {
 	recipeIDStr := c.Param("id")
 	recipeID, err := strconv.ParseInt(recipeIDStr, 10, 64)
@@ -375,7 +435,7 @@ func (s *Store) ApproveRecipe(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": "Recipe approved and XP awarded!"})
 }
 
-// RejectRecipe (no changes)
+// RejectRecipe
 func (s *Store) RejectRecipe(c echo.Context) error {
 	recipeIDStr := c.Param("id")
 	recipeID, err := strconv.ParseInt(recipeIDStr, 10, 64)
@@ -391,7 +451,7 @@ func (s *Store) RejectRecipe(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": "Recipe rejected."})
 }
 
-// CreatePrivateRecipe (no changes)
+// CreatePrivateRecipe
 func (s *Store) CreatePrivateRecipe(c echo.Context) error {
 	userID := c.Get("userID").(string)
 	type PrivateRecipeRequest struct {
@@ -419,14 +479,18 @@ func (s *Store) CreatePrivateRecipe(c echo.Context) error {
 	if req.ImageURL != "" {
 		sqlImageURL = sql.NullString{String: req.ImageURL, Valid: true}
 	}
+
+	// --- MODIFIED: Add slug ---
+	slug := game.Slugify(req.Title)
 	query := `
 		INSERT INTO recipes (
 			title, description, xp, tags, 
 			ingredients, instructions, 
 			status, submitted_by_user_id,
-			image_url, created_at, updated_at
+			image_url, created_at, updated_at,
+			slug
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW(), $10)
 		RETURNING id
 	`
 	var newRecipeID int64
@@ -436,7 +500,9 @@ func (s *Store) CreatePrivateRecipe(c echo.Context) error {
 		req.Ingredients, req.Instructions,
 		"private", userID, // Status is 'private'
 		sqlImageURL,
+		slug, // <-- Pass slug
 	).Scan(&newRecipeID)
+	// ---
 	if err != nil {
 		log.Printf("Error inserting private recipe: pretty%v\n", err)
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
@@ -454,14 +520,15 @@ func (s *Store) CreatePrivateRecipe(c echo.Context) error {
 // GetMyPrivateRecipes fetches all recipes owned by the user with a 'private' status.
 func (s *Store) GetMyPrivateRecipes(c echo.Context) error {
 	userID := c.Get("userID").(string)
-	// --- MODIFIED: Added LEFT JOIN for logs and GROUP BY ---
 	query := `
 		SELECT 
 			r.id, r.title, r.description, r.xp, r.tags, r.created_at, 
 			r.status, r.submitted_by_user_id, u.username AS submitted_by_username,
 			r.ingredients, r.instructions, r.image_url,
 			COALESCE(AVG(l.rating), 0) AS avg_rating,
-			COUNT(l.id) AS cook_count
+			COUNT(l.id) AS cook_count,
+			r.is_featured,
+			r.slug
 		FROM recipes r
 		LEFT JOIN users u ON r.submitted_by_user_id = u.id
 		LEFT JOIN user_cooks_log l ON r.id = l.recipe_id
@@ -484,7 +551,8 @@ func (s *Store) GetMyPrivateRecipes(c echo.Context) error {
 			&r.CreatedAt, &r.Status, &r.SubmittedByUserID,
 			&r.SubmittedByUsername,
 			&r.Ingredients, &r.Instructions, &r.ImageURL,
-			&r.AvgRating, &r.CookCount, // <-- NEW
+			&r.AvgRating, &r.CookCount,
+			&r.IsFeatured, &r.Slug, // <-- UPDATED
 		); err != nil {
 			log.Printf("Error scanning recipe row: pretty%v\n", err)
 			continue
@@ -494,7 +562,7 @@ func (s *Store) GetMyPrivateRecipes(c echo.Context) error {
 	return c.JSON(http.StatusOK, recipes)
 }
 
-// UpdatePrivateRecipe (no changes)
+// UpdatePrivateRecipe
 func (s *Store) UpdatePrivateRecipe(c echo.Context) error {
 	userID := c.Get("userID").(string)
 	recipeIDStr := c.Param("id")
@@ -529,21 +597,26 @@ func (s *Store) UpdatePrivateRecipe(c echo.Context) error {
 		sqlImageURL = sql.NullString{String: req.ImageURL, Valid: true}
 	}
 
+	// --- MODIFIED: Add slug ---
+	slug := game.Slugify(req.Title)
 	query := `
 		UPDATE recipes
 		SET 
 			title = $1, description = $2, tags = $3,
 			ingredients = $4, instructions = $5, updated_at = NOW(),
-			image_url = $6
-		WHERE id = $7 AND submitted_by_user_id = $8 AND (status = 'private' OR status = 'rejected')
+			image_url = $6,
+			slug = $7
+		WHERE id = $8 AND submitted_by_user_id = $9 AND (status = 'private' OR status = 'rejected')
 	`
 	res, err := s.DB.Exec(
 		query,
 		req.Title, req.Description, pq.Array(req.Tags),
 		req.Ingredients, req.Instructions,
 		sqlImageURL,
+		slug, // <-- Pass slug
 		recipeID, userID,
 	)
+	// ---
 	if err != nil {
 		log.Printf("Error updating private recipe: pretty%v\n", err)
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
@@ -561,7 +634,7 @@ func (s *Store) UpdatePrivateRecipe(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": "Recipe updated successfully"})
 }
 
-// DeletePrivateRecipe (no changes)
+// DeletePrivateRecipe
 func (s *Store) DeletePrivateRecipe(c echo.Context) error {
 	userID := c.Get("userID").(string)
 	recipeIDStr := c.Param("id")
@@ -586,7 +659,7 @@ func (s *Store) DeletePrivateRecipe(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": "Recipe deleted successfully"})
 }
 
-// SubmitPrivateRecipe (no changes)
+// SubmitPrivateRecipe
 func (s *Store) SubmitPrivateRecipe(c echo.Context) error {
 	userID := c.Get("userID").(string)
 	recipeIDStr := c.Param("id")
@@ -598,7 +671,7 @@ func (s *Store) SubmitPrivateRecipe(c echo.Context) error {
 	query := `
 		UPDATE recipes
 		SET status = 'pending', updated_at = NOW()
-		WHERE id = $1 AND submitted_by_user_id = $2 AND status = 'private'
+		WHERE id = $1 AND submitted_by_user_id = $2 AND (status = 'private' OR status = 'rejected')
 	`
 	res, err := s.DB.Exec(query, recipeID, userID)
 	if err != nil {
@@ -608,7 +681,7 @@ func (s *Store) SubmitPrivateRecipe(c echo.Context) error {
 
 	rowsAffected, _ := res.RowsAffected()
 	if rowsAffected == 0 {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "Private recipe not found or you do not have permission."})
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Recipe not found or you do not have permission."})
 	}
 
 	log.Printf("User pretty%s submitted private recipe (ID: pretty%d) for review", userID, recipeID)

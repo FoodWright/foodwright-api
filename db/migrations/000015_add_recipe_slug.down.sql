@@ -1,0 +1,4 @@
+ALTER TABLE recipes
+DROP COLUMN IF EXISTS slug;
+
+DROP FUNCTION IF EXISTS slugify(text);

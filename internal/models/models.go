@@ -118,13 +118,17 @@ type RecipeComment struct {
 }
 
 type Badge struct {
-	ID          int64          `json:"id"`
-	RuleKey     string         `json:"rule_key"`
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	IconURL     sql.NullString `json:"icon_url"`
-	BadgeType   string         `json:"badge_type"`
-	EarnedAt    sql.NullTime   `json:"earned_at,omitempty"`
+	ID           int64            `json:"id"`
+	RuleKey      sql.NullString   `json:"rule_key"` // Kept for reference, but now nullable
+	Name         string           `json:"name"`
+	Description  string           `json:"description"`
+	IconURL      sql.NullString   `json:"icon_url"`
+	BadgeType    string           `json:"badge_type"`
+	EarnedAt     sql.NullTime     `json:"earned_at,omitempty"`
+	StartDate    sql.NullTime     `json:"start_date,omitempty"` // For admin UI
+	EndDate      sql.NullTime     `json:"end_date,omitempty"`   // For admin UI
+	TriggerEvent string           `json:"trigger_event"`        // NEW: 'on_cook', 'on_approval'
+	RuleConfig   *json.RawMessage `json:"rule_config"`          // NEW: The JSON rule logic
 }
 
 type UserProfile struct {

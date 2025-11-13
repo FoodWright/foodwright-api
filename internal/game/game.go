@@ -2,6 +2,8 @@ package game
 
 import (
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -10,22 +12,18 @@ import (
 	"github.com/FoodWright/foodwright-api/internal/models"
 )
 
+// --- Slugify and Rank (No changes) ---
 var (
 	nonAlphanumericRegex = regexp.MustCompile(`[^a-zA-Z0-9\s-]`)
 	spaceRegex           = regexp.MustCompile(`[\s-]+`)
 )
 
-// Slugify creates a URL-friendly slug from a title
 func Slugify(title string) string {
-	// 1. Remove all non-alphanumeric chars
 	s := nonAlphanumericRegex.ReplaceAllString(title, "")
-	// 2. Replace spaces/hyphens with a single hyphen
 	s = spaceRegex.ReplaceAllString(s, "-")
-	// 3. Convert to lowercase
 	return strings.ToLower(s)
 }
 
-// CalculateRank determines a user's rank based on their XP
 func CalculateRank(xp int) string {
 	if xp >= 500 {
 		return "Master Foodwright"
@@ -45,11 +43,19 @@ func CalculateRank(xp int) string {
 	return "Kitchen Novice"
 }
 
-// --- NEW BADGE ENGINE ---
+// --- NEW DYNAMIC BADGE ENGINE ---
 
-// CheckAndAwardBadges is the new Badge Engine.
-// It checks all eligible badges against the user's current actions.
-func CheckAndAwardBadges(tx *sql.Tx, userID string, recipeID int64) ([]string, error) {
+// RuleConfig defines the structure for our JSON-based rules
+type RuleConfig struct {
+	Type      string `json:"type"`      // e.g., "TOTAL_COOKS", "COOKS_WITH_TAG"
+	Operator  string `json:"operator"`  // e.g., "==", ">="
+	Value     int    `json:"value"`     // e.g., 1, 3
+	Parameter string `json:"parameter"` // e.g., "baking"
+}
+
+// CheckAndAwardBadges is the new dynamic Badge Engine.
+// It checks all eligible badges that match a specific trigger event.
+func CheckAndAwardBadges(tx *sql.Tx, userID string, recipeID int64, event string) ([]string, error) {
 	newlyAwarded := []string{}
 
 	// 1. Get all badges the user *already has*.
@@ -58,9 +64,9 @@ func CheckAndAwardBadges(tx *sql.Tx, userID string, recipeID int64) ([]string, e
 		return nil, fmt.Errorf("failed to get current badges: %w", err)
 	}
 
-	// 2. Get all badges that are *possible* to earn right now.
-	// (Milestones, or active seasonal/event badges)
-	eligibleBadges, err := getEligibleBadges(tx)
+	// 2. Get all badges that are *possible* to earn right now
+	//    that match the trigger event.
+	eligibleBadges, err := getEligibleBadges(tx, event)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get eligible badges: %w", err)
 	}
@@ -72,16 +78,16 @@ func CheckAndAwardBadges(tx *sql.Tx, userID string, recipeID int64) ([]string, e
 			continue
 		}
 
-		// Run the specific rule check for this badge
-		earned, err := checkBadgeRule(tx, userID, recipeID, badge)
+		// Run the dynamic rule check for this badge
+		earned, err := evaluateRule(tx, userID, recipeID, badge.RuleConfig)
 		if err != nil {
-			log.Printf("Error checking badge rule %s: %v", badge.RuleKey, err)
+			log.Printf("Error evaluating badge rule %s: %v", badge.Name, err)
 			continue // Don't stop the whole process
 		}
 
 		if earned {
 			// --- AWARD THE BADGE ---
-			err := AwardBadge(tx, userID, badge.ID) // <-- Use exported function
+			err := AwardBadge(tx, userID, badge.ID)
 			if err != nil {
 				log.Printf("Error awarding badge %s: %v", badge.Name, err)
 				continue
@@ -114,16 +120,19 @@ func getEarnedBadgeIDs(tx *sql.Tx, userID string) (map[int64]bool, error) {
 }
 
 // getEligibleBadges fetches all badges that can be earned right now
-func getEligibleBadges(tx *sql.Tx) ([]models.Badge, error) {
+// for a specific trigger event.
+func getEligibleBadges(tx *sql.Tx, event string) ([]models.Badge, error) {
 	query := `
-		SELECT id, rule_key, name, description, icon_url, badge_type
+		SELECT id, name, rule_config
 		FROM badges
 		WHERE 
-			badge_type = 'MILESTONE' OR 
-			(badge_type = 'SEASONAL' AND NOW() BETWEEN start_date AND end_date) OR
-			(badge_type = 'EVENT' AND NOW() BETWEEN start_date AND end_date)
+			trigger_event = $1 AND (
+				badge_type = 'MILESTONE' OR 
+				(badge_type = 'SEASONAL' AND NOW() BETWEEN start_date AND end_date) OR
+				(badge_type = 'EVENT' AND NOW() BETWEEN start_date AND end_date)
+			)
 	`
-	rows, err := tx.Query(query)
+	rows, err := tx.Query(query, event)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +141,7 @@ func getEligibleBadges(tx *sql.Tx) ([]models.Badge, error) {
 	var badges []models.Badge
 	for rows.Next() {
 		var b models.Badge
-		if err := rows.Scan(&b.ID, &b.RuleKey, &b.Name, &b.Description, &b.IconURL, &b.BadgeType); err != nil {
+		if err := rows.Scan(&b.ID, &b.Name, &b.RuleConfig); err != nil {
 			return nil, err
 		}
 		badges = append(badges, b)
@@ -140,7 +149,6 @@ func getEligibleBadges(tx *sql.Tx) ([]models.Badge, error) {
 	return badges, nil
 }
 
-// --- FIX: This function is now exported (AwardBadge) ---
 // AwardBadge inserts the new badge into the user_badges table
 func AwardBadge(tx *sql.Tx, userID string, badgeID int64) error {
 	query := "INSERT INTO user_badges (user_id, badge_id) VALUES ($1, $2) ON CONFLICT DO NOTHING"
@@ -148,62 +156,70 @@ func AwardBadge(tx *sql.Tx, userID string, badgeID int64) error {
 	return err
 }
 
-// checkBadgeRule is the main "engine" that runs the logic for each badge
-func checkBadgeRule(tx *sql.Tx, userID string, recipeID int64, badge models.Badge) (bool, error) {
-	// This switch statement is the core of our engine.
-	// To add a new badge, you just add a new `case` here.
-	switch badge.RuleKey {
+// compare is a simple helper to evaluate the rule
+func compare(count int, op string, value int) bool {
+	switch op {
+	case "==":
+		return count == value
+	case ">=":
+		return count >= value
+	case ">":
+		return count > value
+	case "<=":
+		return count <= value
+	case "<":
+		return count < value
+	default:
+		return false
+	}
+}
 
-	case "FIRST_COOK":
-		// This logic runs *before* the new log is inserted,
-		// so a count of 0 means this is the first one.
-		var totalCooks int
-		err := tx.QueryRow("SELECT COUNT(*) FROM user_cooks_log WHERE user_id = $1", userID).Scan(&totalCooks)
-		if err != nil {
-			return false, err
+// evaluateRule is the new engine that parses and executes JSON rules.
+// NOTE: This logic assumes it's running *after* the new data is in the DB.
+// (e.g., after the new cook_log is inserted).
+func evaluateRule(tx *sql.Tx, userID string, recipeID int64, ruleConfig *json.RawMessage) (bool, error) {
+	var config RuleConfig
+	if err := json.Unmarshal(*ruleConfig, &config); err != nil {
+		return false, fmt.Errorf("failed to parse rule_config: %w", err)
+	}
+
+	var count int
+	var err error
+
+	switch config.Type {
+	case "TOTAL_COOKS":
+		query := "SELECT COUNT(*) FROM user_cooks_log WHERE user_id = $1"
+		err = tx.QueryRow(query, userID).Scan(&count)
+
+	case "COOKS_WITH_TAG":
+		if config.Parameter == "" {
+			return false, errors.New("rule 'COOKS_WITH_TAG' requires a 'parameter' (tag name)")
 		}
-		return totalCooks == 0, nil
-
-	case "BAKER_3":
-		// Check if the user has cooked 3 *different* baking recipes.
-		const bakingTarget = 3
-		var bakingCooks int
 		query := `
 			SELECT COUNT(DISTINCT l.recipe_id)
 			FROM user_cooks_log l
 			JOIN recipes r ON l.recipe_id = r.id
-			WHERE l.user_id = $1 AND r.tags @> ARRAY['baking']::text[]
+			WHERE l.user_id = $1 AND r.tags @> ARRAY[$2]::text[]
 		`
-		err := tx.QueryRow(query, userID).Scan(&bakingCooks)
-		if err != nil {
-			return false, err
-		}
+		err = tx.QueryRow(query, userID, config.Parameter).Scan(&count)
 
-		// This logic is flawed - it doesn't account for the *current* cook.
-		// A better system would pass the `recipe` object here.
-		// For now, we'll check if they are *about* to hit the target.
-		if bakingCooks == (bakingTarget - 1) {
-			var isCurrentCookBaking bool
-			err = tx.QueryRow("SELECT tags @> ARRAY['baking']::text[] FROM recipes WHERE id = $1", recipeID).Scan(&isCurrentCookBaking)
-			if err != nil {
-				return false, err
-			}
-			return isCurrentCookBaking, nil
-		}
-		return false, nil
+	case "APPROVED_SUBMISSIONS":
+		query := "SELECT COUNT(*) FROM recipes WHERE submitted_by_user_id = $1 AND status = 'approved'"
+		err = tx.QueryRow(query, userID).Scan(&count)
 
-	case "RECIPE_SMITH_1":
-		// This badge is NOT awarded by cooking.
-		// It's awarded in `ApproveRecipe` in store.go.
-		// So we just return false here.
-		return false, nil
-
-	// --- Future Badges ---
-	// case "HOLIDAY_2025":
-	//   ... run query for holiday tags ...
-	//   return true, nil
+	// --- Add new rule types here in the future ---
+	// case "TOTAL_COMMENTS":
+	// 	query := "SELECT COUNT(*) FROM recipe_comments WHERE user_id = $1"
+	// 	err = tx.QueryRow(query, userID).Scan(&count)
 
 	default:
-		return false, nil
+		return false, fmt.Errorf("unknown rule type: %s", config.Type)
 	}
+
+	if err != nil {
+		return false, fmt.Errorf("failed to execute query for rule %s: %w", config.Type, err)
+	}
+
+	// Finally, compare the result
+	return compare(count, config.Operator, config.Value), nil
 }

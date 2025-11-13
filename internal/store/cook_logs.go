@@ -146,7 +146,7 @@ func (s *Store) LogCook(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to get user profile"})
 	}
 
-	newlyAwardedBadges, err := game.CheckAndAwardBadges(tx, userID, recipeID)
+	newlyAwardedBadges, err := game.CheckAndAwardBadges(tx, userID, recipeID, "on_cook")
 	if err != nil {
 		log.Printf("Error in Badge Engine: %v. Continuing with log...\n", err)
 		newlyAwardedBadges = []string{}

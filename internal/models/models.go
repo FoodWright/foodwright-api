@@ -13,6 +13,7 @@ import (
 // --- JSONB Structs and Scanners ---
 
 type Ingredient struct {
+	Type     string `json:"type"`
 	Quantity string `json:"quantity"`
 	Name     string `json:"name"`
 }

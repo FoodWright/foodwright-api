@@ -402,23 +402,17 @@ func (s *Store) ApproveRecipe(c echo.Context) error {
 	if submitterID.Valid {
 		submitterUserID := submitterID.String
 		const approvalXP = 250
-		const badgeRuleKey = "RECIPE_SMITH_1"
-		var badgeToAward models.Badge
-		err := tx.QueryRow("SELECT id, name FROM badges WHERE rule_key = $1", badgeRuleKey).Scan(&badgeToAward.ID, &badgeToAward.Name)
+
+		// --- MODIFIED: Use new dynamic badge engine ---
+		// Call the badge engine with the "on_approval" event
+		newlyAwardedBadges, err := game.CheckAndAwardBadges(tx, submitterUserID, recipeID, "on_approval")
 		if err != nil {
-			log.Printf("CRITICAL: Failed to find badge definition for pretty%s: pretty%v", badgeRuleKey, err)
-		} else {
-			var exists int
-			err = tx.QueryRow("SELECT 1 FROM user_badges WHERE user_id = $1 AND badge_id = $2", submitterUserID, badgeToAward.ID).Scan(&exists)
-			if err != nil && err != sql.ErrNoRows {
-				log.Printf("Error checking if user pretty%s has badge pretty%d: pretty%v", submitterUserID, badgeToAward.ID, err)
-			} else if err == sql.ErrNoRows {
-				err = game.AwardBadge(tx, submitterUserID, badgeToAward.ID)
-				if err != nil {
-					log.Printf("Failed to award badge pretty%s to user pretty%s: pretty%v", badgeToAward.Name, submitterUserID, err)
-				}
-			}
+			log.Printf("Error checking for 'on_approval' badges for user %s: %v", submitterUserID, err)
+		} else if len(newlyAwardedBadges) > 0 {
+			log.Printf("User %s awarded new badges: %v", submitterUserID, newlyAwardedBadges)
 		}
+		// --- END MODIFICATION ---
+
 		_, err = tx.Exec(
 			"UPDATE users SET xp = xp + $1, updated_at = NOW() WHERE id = $2",
 			approvalXP, submitterUserID,
@@ -686,4 +680,32 @@ func (s *Store) SubmitPrivateRecipe(c echo.Context) error {
 
 	log.Printf("User pretty%s submitted private recipe (ID: pretty%d) for review", userID, recipeID)
 	return c.JSON(http.StatusOK, map[string]string{"message": "Recipe submitted to Guild for review!"})
+}
+
+// --- NEW: ToggleRecipeFeature ---
+// ToggleRecipeFeature allows a site admin to mark/unmark a recipe as featured.
+func (s *Store) ToggleRecipeFeature(c echo.Context) error {
+	recipeIDStr := c.Param("id")
+	recipeID, err := strconv.ParseInt(recipeIDStr, 10, 64)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid recipe ID"})
+	}
+
+	var isFeatured bool
+	query := "UPDATE recipes SET is_featured = NOT is_featured, updated_at = NOW() WHERE id = $1 RETURNING is_featured"
+	err = s.DB.QueryRow(query, recipeID).Scan(&isFeatured)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "Recipe not found"})
+		}
+		log.Printf("Error toggling featured status for recipe %d: %v", recipeID, err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to update recipe"})
+	}
+
+	log.Printf("Site Admin %s toggled featured status for recipe %d to %t", c.Get("userID"), recipeID, isFeatured)
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message":     "Featured status updated",
+		"id":          recipeID,
+		"is_featured": isFeatured,
+	})
 }

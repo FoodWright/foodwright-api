@@ -143,7 +143,7 @@ func (s *Store) CreateBadge(c echo.Context) error {
 		query,
 		sqlRuleKey, req.Name, req.Description,
 		sqlIconURL, req.BadgeType, sqlStartDate, sqlEndDate,
-		req.TriggerEvent, req.RuleConfig,
+		req.TriggerEvent, string(*req.RuleConfig), // <-- MODIFIED: Cast to string
 	).Scan(&newID)
 
 	if err != nil {
@@ -212,7 +212,7 @@ func (s *Store) UpdateBadge(c echo.Context) error {
 		query,
 		sqlRuleKey, req.Name, req.Description,
 		sqlIconURL, req.BadgeType, sqlStartDate, sqlEndDate,
-		req.TriggerEvent, req.RuleConfig,
+		req.TriggerEvent, string(*req.RuleConfig), // <-- MODIFIED: Cast to string
 		badgeID,
 	)
 

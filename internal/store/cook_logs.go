@@ -146,12 +146,8 @@ func (s *Store) LogCook(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to get user profile"})
 	}
 
-	newlyAwardedBadges, err := game.CheckAndAwardBadges(tx, userID, recipeID, "on_cook")
-	if err != nil {
-		log.Printf("Error in Badge Engine: %v. Continuing with log...\n", err)
-		newlyAwardedBadges = []string{}
-	}
-
+	// --- LOGIC ORDER FIX ---
+	// 1. INSERT the cook log *first*, so the count is accurate.
 	_, err = tx.Exec(
 		"INSERT INTO user_cooks_log (user_id, recipe_id, notes, rating) VALUES ($1, $2, $3, $4)",
 		userID, recipeID, sqlNotes, sqlRating,
@@ -160,6 +156,14 @@ func (s *Store) LogCook(c echo.Context) error {
 		log.Printf("Error inserting cook log: %v\n", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to log cook record"})
 	}
+
+	// 2. NOW check for badges, with the new log in the database.
+	newlyAwardedBadges, err := game.CheckAndAwardBadges(tx, userID, recipeID, "on_cook")
+	if err != nil {
+		log.Printf("Error in Badge Engine: %v. Continuing with log...\n", err)
+		newlyAwardedBadges = []string{}
+	}
+	// --- END FIX ---
 
 	newTotalXP := currentXP + recipeXP
 	newRank := game.CalculateRank(newTotalXP)

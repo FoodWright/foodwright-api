@@ -442,6 +442,15 @@ func (s *Store) CreatePrivateRecipe(c echo.Context) error {
 
 	slug := game.Slugify(req.Title) // Create slug
 
+	// --- MODIFIED: Use a transaction ---
+	tx, err := s.DB.Begin()
+	if err != nil {
+		log.Printf("Failed to begin transaction: %v\n", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Database error"})
+	}
+	defer tx.Rollback()
+	// ---
+
 	query := `
 		INSERT INTO recipes (
 			title, description, xp, tags, 
@@ -453,13 +462,15 @@ func (s *Store) CreatePrivateRecipe(c echo.Context) error {
 		RETURNING id
 	`
 	var newRecipeID int64
-	err := s.DB.QueryRow(
+	// --- MODIFIED: Use tx.QueryRow ---
+	err = tx.QueryRow(
 		query,
 		req.Title, req.Description, 0, pq.Array(req.Tags), // XP is 0
 		req.Ingredients, req.Instructions,
 		"private", userID, // Status is 'private'
 		sqlImageURL, slug,
 	).Scan(&newRecipeID)
+	// ---
 	if err != nil {
 		log.Printf("Error inserting private recipe: %v\n", err)
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
@@ -467,11 +478,31 @@ func (s *Store) CreatePrivateRecipe(c echo.Context) error {
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to submit recipe"})
 	}
+
+	// --- NEW: Call badge engine ---
+	newlyAwardedBadges, err := game.CheckAndAwardBadges(tx, userID, newRecipeID, "on_private_save")
+	if err != nil {
+		// Log the error but don't fail the transaction
+		log.Printf("Error checking for 'on_private_save' badges for user %s: %v", userID, err)
+		newlyAwardedBadges = []string{} // Ensure it's an empty list
+	}
+	// ---
+
+	// --- MODIFIED: Commit transaction ---
+	if err := tx.Commit(); err != nil {
+		log.Printf("Error committing private recipe: %v\n", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to save recipe"})
+	}
+	// ---
+
 	log.Printf("User %s created new private recipe (ID: %d)", userID, newRecipeID)
+	// --- MODIFIED: Return new badges ---
 	return c.JSON(http.StatusCreated, map[string]interface{}{
-		"message":  "Recipe saved to your private cookbook!",
-		"recipeId": newRecipeID,
+		"message":            "Recipe saved to your private cookbook!",
+		"recipeId":           newRecipeID,
+		"new_badges_awarded": newlyAwardedBadges,
 	})
+	// ---
 }
 
 // GetMyPrivateRecipes fetches all recipes owned by the user with a 'private' status.

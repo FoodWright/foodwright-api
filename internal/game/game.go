@@ -207,6 +207,12 @@ func evaluateRule(tx *sql.Tx, userID string, recipeID int64, ruleConfig *json.Ra
 		query := "SELECT COUNT(*) FROM recipes WHERE submitted_by_user_id = $1 AND status = 'approved'"
 		err = tx.QueryRow(query, userID).Scan(&count)
 
+	// --- NEW: Rule for Private Recipes ---
+	case "TOTAL_PRIVATE_RECIPES":
+		query := "SELECT COUNT(*) FROM recipes WHERE submitted_by_user_id = $1 AND status = 'private'"
+		err = tx.QueryRow(query, userID).Scan(&count)
+	// ---
+
 	// --- Add new rule types here in the future ---
 	// case "TOTAL_COMMENTS":
 	// 	query := "SELECT COUNT(*) FROM recipe_comments WHERE user_id = $1"

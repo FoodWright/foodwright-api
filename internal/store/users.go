@@ -13,12 +13,13 @@ import (
 // GetProfile fetches the profile for the currently authenticated user, creating one if it doesn't exist.
 func (s *Store) GetProfile(c echo.Context) error {
 	userID := c.Get("userID").(string)
-	username := c.Get("username").(string)
+	username := c.Get("username").(string) // <-- THIS WAS THE MISSING LINE
 	log.Printf("Fetching profile for authenticated user: %s", userID)
 
 	var profile models.UserProfile
 	query := `
-		SELECT id, username, rank, xp, created_at, updated_at, is_admin, is_site_admin 
+		SELECT id, username, rank, xp, created_at, updated_at, 
+		       is_admin, is_site_admin, unit_preference 
 		FROM users WHERE id = $1
 	`
 	err := s.DB.QueryRow(query, userID).Scan(
@@ -30,24 +31,27 @@ func (s *Store) GetProfile(c echo.Context) error {
 		&profile.UpdatedAt,
 		&profile.IsAdmin,
 		&profile.IsSiteAdmin,
+		&profile.UnitPreference,
 	)
 
 	if err == sql.ErrNoRows {
 		log.Printf("No profile found for user %s, creating one...\n", userID)
 		profile = models.UserProfile{
-			ID:          userID,
-			Username:    username,
-			Rank:        "Kitchen Novice",
-			XP:          1,
-			Badges:      []models.Badge{},
-			IsAdmin:     false,
-			IsSiteAdmin: false,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
+			ID:             userID,
+			Username:       username,
+			Rank:           "Kitchen Novice",
+			XP:             1,
+			Badges:         []models.Badge{},
+			IsAdmin:        false,
+			IsSiteAdmin:    false,
+			UnitPreference: "imperial", // Default
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
 		}
 		insertQuery := `
-			INSERT INTO users (id, username, rank, xp, created_at, updated_at, is_admin, is_site_admin)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			INSERT INTO users (id, username, rank, xp, created_at, updated_at, 
+			                 is_admin, is_site_admin, unit_preference)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		`
 		_, err = s.DB.Exec(
 			insertQuery,
@@ -59,11 +63,13 @@ func (s *Store) GetProfile(c echo.Context) error {
 			profile.UpdatedAt,
 			profile.IsAdmin,
 			profile.IsSiteAdmin,
+			profile.UnitPreference,
 		)
 		if err != nil {
 			log.Printf("Failed to create new user profile: %v\n", err)
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create profile"})
 		}
+		// Return the newly created profile, badges will be fetched on next call
 		return c.JSON(http.StatusCreated, profile)
 
 	} else if err != nil {
@@ -88,6 +94,7 @@ func (s *Store) GetPublicProfile(c echo.Context) error {
 	log.Printf("Fetching PUBLIC profile for user: %s", userID)
 
 	var profile models.PublicUserProfile
+	// NOTE: We don't select unit_preference here, as it's not public
 	query := "SELECT id, username, rank, xp, created_at FROM users WHERE id = $1"
 
 	err := s.DB.QueryRow(query, userID).Scan(
@@ -115,4 +122,36 @@ func (s *Store) GetPublicProfile(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, profile)
+}
+
+// --- NEW HANDLER ---
+
+// UpdatePreferences allows a user to update their settings.
+func (s *Store) UpdatePreferences(c echo.Context) error {
+	userID := c.Get("userID").(string)
+
+	type PrefRequest struct {
+		UnitPreference string `json:"unit_preference"`
+	}
+	var req PrefRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
+	}
+
+	// Validate the preference
+	if req.UnitPreference != "imperial" && req.UnitPreference != "metric" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid unit_preference value. Must be 'imperial' or 'metric'."})
+	}
+
+	query := "UPDATE users SET unit_preference = $1, updated_at = NOW() WHERE id = $2"
+	_, err := s.DB.Exec(query, req.UnitPreference, userID)
+	if err != nil {
+		log.Printf("Error updating preferences for user %s: %v\n", userID, err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to update preferences"})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message":         "Preferences updated",
+		"unit_preference": req.UnitPreference,
+	})
 }

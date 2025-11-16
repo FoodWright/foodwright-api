@@ -13,9 +13,10 @@ import (
 // --- JSONB Structs and Scanners ---
 
 type Ingredient struct {
-	Type     string `json:"type"`
-	Quantity string `json:"quantity"`
-	Name     string `json:"name"`
+	Type        string `json:"type"`                   // "ingredient" or "header"
+	Name        string `json:"name"`                   // For header: title, For ingredient: name
+	QuantityStr string `json:"quantity_str,omitempty"` // "1 1/2", "0.5", "100"
+	Unit        string `json:"unit,omitempty"`         // "cup", "g", "tsp"
 }
 type IngredientsList []Ingredient
 
@@ -133,15 +134,16 @@ type Badge struct {
 }
 
 type UserProfile struct {
-	ID          string    `json:"id"`
-	Username    string    `json:"username"`
-	Rank        string    `json:"rank"`
-	XP          int       `json:"xp"`
-	Badges      []Badge   `json:"badges"`
-	IsAdmin     bool      `json:"is_admin"`
-	IsSiteAdmin bool      `json:"is_site_admin"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID             string    `json:"id"`
+	Username       string    `json:"username"`
+	Rank           string    `json:"rank"`
+	XP             int       `json:"xp"`
+	Badges         []Badge   `json:"badges"`
+	IsAdmin        bool      `json:"is_admin"`
+	IsSiteAdmin    bool      `json:"is_site_admin"`
+	UnitPreference string    `json:"unit_preference"` // "imperial" or "metric"
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type PublicUserProfile struct {

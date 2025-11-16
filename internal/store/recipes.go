@@ -615,7 +615,12 @@ func (s *Store) UpdatePrivateRecipe(c echo.Context) error {
 	}
 
 	log.Printf("User %s updated private recipe (ID: %d)", userID, recipeID)
-	return c.JSON(http.StatusOK, map[string]string{"message": "Recipe updated successfully"})
+	// --- MODIFIED: Return value ---
+	// Return a simple map, as the response is checked in the frontend
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Recipe updated successfully",
+	})
+	// ---
 }
 
 // DeletePrivateRecipe (no changes)

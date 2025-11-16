@@ -80,6 +80,7 @@ func main() {
 	protected.Use(authHandler.FirebaseMiddleware)
 
 	protected.GET("/profile", s.GetProfile)
+	protected.PUT("/profile/preferences", s.UpdatePreferences)
 	protected.POST("/recipes/:id/log", s.LogCook)
 	protected.POST("/recipes", s.SubmitRecipe)
 	protected.GET("/recipes/my-submissions", s.GetMySubmissions)

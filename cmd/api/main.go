@@ -96,6 +96,10 @@ func main() {
 	protected.DELETE("/recipes/private/:id", s.DeletePrivateRecipe)
 	protected.POST("/recipes/private/:id/submit", s.SubmitPrivateRecipe)
 
+	// --- THIS IS THE NEW LINE ---
+	protected.POST("/recipes/import-url", s.ImportRecipeFromURL)
+	// ----------------------------
+
 	protected.POST("/recipes/:id/comments", s.PostRecipeComment)
 
 	// --- Admin Routes (Guild Moderator) ---

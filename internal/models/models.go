@@ -80,6 +80,7 @@ type Recipe struct {
 	Ingredients         IngredientsList  `json:"ingredients"`
 	Instructions        InstructionsList `json:"instructions"`
 	ImageURL            sql.NullString   `json:"image_url"`
+	Source              sql.NullString   `json:"source"`
 	AvgRating           float64          `json:"avg_rating"`
 	CookCount           int              `json:"cook_count"`
 	IsFeatured          bool             `json:"is_featured"`

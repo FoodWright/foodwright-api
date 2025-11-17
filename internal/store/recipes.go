@@ -2,10 +2,12 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/FoodWright/foodwright-api/internal/models"
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
+	"golang.org/x/net/html"
 )
 
 // GetRecipes handles fetching a paginated, searchable, and tag-filterable list of approved recipes.
@@ -41,7 +44,7 @@ func (s *Store) GetRecipes(c echo.Context) error {
 		SELECT 
 			r.id, r.title, r.description, r.xp, r.tags, r.created_at, 
 			r.status, r.submitted_by_user_id, u.username AS submitted_by_username,
-			r.ingredients, r.instructions, r.image_url,
+			r.ingredients, r.instructions, r.image_url, r.source, -- Added r.source
 			COALESCE(AVG(l.rating), 0) AS avg_rating,
 			COUNT(l.id) AS cook_count,
 			r.is_featured, r.slug
@@ -100,7 +103,7 @@ func (s *Store) GetRecipes(c echo.Context) error {
 			&r.ID, &r.Title, &r.Description, &r.XP, &r.Tags,
 			&r.CreatedAt, &r.Status, &r.SubmittedByUserID,
 			&r.SubmittedByUsername,
-			&r.Ingredients, &r.Instructions, &r.ImageURL,
+			&r.Ingredients, &r.Instructions, &r.ImageURL, &r.Source, // Added &r.Source
 			&r.AvgRating, &r.CookCount,
 			&r.IsFeatured, &r.Slug,
 		); err != nil {
@@ -135,7 +138,7 @@ func (s *Store) GetRecipeByID(c echo.Context) error {
 		SELECT 
 			r.id, r.title, r.description, r.xp, r.tags, r.created_at, 
 			r.status, r.submitted_by_user_id, u.username AS submitted_by_username,
-			r.ingredients, r.instructions, r.image_url,
+			r.ingredients, r.instructions, r.image_url, r.source, -- Added r.source
 			COALESCE(AVG(l.rating), 0) AS avg_rating,
 			COUNT(l.id) AS cook_count,
 			r.is_featured, r.slug
@@ -145,14 +148,13 @@ func (s *Store) GetRecipeByID(c echo.Context) error {
 		WHERE r.id = $1
 		GROUP BY r.id, u.username
 	`
-	log.Println("DEBUG: getRecipeByID: Executing query:", query)
 
 	var r models.Recipe
 	if err := s.DB.QueryRow(query, id).Scan(
 		&r.ID, &r.Title, &r.Description, &r.XP, &r.Tags,
 		&r.CreatedAt, &r.Status, &r.SubmittedByUserID,
 		&r.SubmittedByUsername,
-		&r.Ingredients, &r.Instructions, &r.ImageURL,
+		&r.Ingredients, &r.Instructions, &r.ImageURL, &r.Source, // Added &r.Source
 		&r.AvgRating, &r.CookCount,
 		&r.IsFeatured, &r.Slug,
 	); err != nil {
@@ -182,6 +184,8 @@ func (s *Store) SubmitRecipe(c echo.Context) error {
 		Ingredients  models.IngredientsList  `json:"ingredients"`
 		Instructions models.InstructionsList `json:"instructions"`
 		ImageURL     string                  `json:"image_url"`
+		// Note: Source is not included here, as this is for direct submission
+		// not the private edit form.
 	}
 	var req SubmitRecipeRequest
 	if err := c.Bind(&req); err != nil {
@@ -245,7 +249,7 @@ func (s *Store) GetMySubmissions(c echo.Context) error {
 		SELECT 
 			r.id, r.title, r.description, r.xp, r.tags, r.created_at, 
 			r.status, r.submitted_by_user_id, u.username AS submitted_by_username,
-			r.ingredients, r.instructions, r.image_url,
+			r.ingredients, r.instructions, r.image_url, r.source, -- Added r.source
 			COALESCE(AVG(l.rating), 0) AS avg_rating,
 			COUNT(l.id) AS cook_count,
 			r.is_featured, r.slug
@@ -270,7 +274,7 @@ func (s *Store) GetMySubmissions(c echo.Context) error {
 			&r.ID, &r.Title, &r.Description, &r.XP, &r.Tags,
 			&r.CreatedAt, &r.Status, &r.SubmittedByUserID,
 			&r.SubmittedByUsername,
-			&r.Ingredients, &r.Instructions, &r.ImageURL,
+			&r.Ingredients, &r.Instructions, &r.ImageURL, &r.Source, // Added &r.Source
 			&r.AvgRating, &r.CookCount,
 			&r.IsFeatured, &r.Slug,
 		); err != nil {
@@ -288,7 +292,7 @@ func (s *Store) GetPendingRecipes(c echo.Context) error {
 		SELECT 
 			r.id, r.title, r.description, r.xp, r.tags, r.created_at, 
 			r.status, r.submitted_by_user_id, u.username AS submitted_by_username,
-			r.ingredients, r.instructions, r.image_url,
+			r.ingredients, r.instructions, r.image_url, r.source, -- Added r.source
 			COALESCE(AVG(l.rating), 0) AS avg_rating,
 			COUNT(l.id) AS cook_count,
 			r.is_featured, r.slug
@@ -313,7 +317,7 @@ func (s *Store) GetPendingRecipes(c echo.Context) error {
 			&r.ID, &r.Title, &r.Description, &r.XP, &r.Tags,
 			&r.CreatedAt, &r.Status, &r.SubmittedByUserID,
 			&r.SubmittedByUsername,
-			&r.Ingredients, &r.Instructions, &r.ImageURL,
+			&r.Ingredients, &r.Instructions, &r.ImageURL, &r.Source, // Added &r.Source
 			&r.AvgRating, &r.CookCount,
 			&r.IsFeatured, &r.Slug,
 		); err != nil {
@@ -411,17 +415,21 @@ func (s *Store) RejectRecipe(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": "Recipe rejected."})
 }
 
+// PrivateRecipeRequest is the struct for creating/updating private recipes
+type PrivateRecipeRequest struct {
+	Title        string                  `json:"title"`
+	Description  string                  `json:"description"`
+	Tags         []string                `json:"tags"`
+	Ingredients  models.IngredientsList  `json:"ingredients"`
+	Instructions models.InstructionsList `json:"instructions"`
+	ImageURL     string                  `json:"image_url"`
+	Source       string                  `json:"source"` // <-- ADDED
+}
+
 // CreatePrivateRecipe
 func (s *Store) CreatePrivateRecipe(c echo.Context) error {
 	userID := c.Get("userID").(string)
-	type PrivateRecipeRequest struct {
-		Title        string                  `json:"title"`
-		Description  string                  `json:"description"`
-		Tags         []string                `json:"tags"`
-		Ingredients  models.IngredientsList  `json:"ingredients"`
-		Instructions models.InstructionsList `json:"instructions"`
-		ImageURL     string                  `json:"image_url"`
-	}
+
 	var req PrivateRecipeRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
@@ -439,6 +447,12 @@ func (s *Store) CreatePrivateRecipe(c echo.Context) error {
 	if req.ImageURL != "" {
 		sqlImageURL = sql.NullString{String: req.ImageURL, Valid: true}
 	}
+	// --- ADDED FOR SOURCE ---
+	var sqlSource sql.NullString
+	if req.Source != "" {
+		sqlSource = sql.NullString{String: req.Source, Valid: true}
+	}
+	// ---
 
 	slug := game.Slugify(req.Title) // Create slug
 
@@ -456,9 +470,9 @@ func (s *Store) CreatePrivateRecipe(c echo.Context) error {
 			title, description, xp, tags, 
 			ingredients, instructions, 
 			status, submitted_by_user_id,
-			image_url, created_at, updated_at, slug
+			image_url, source, created_at, updated_at, slug
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW(), $10)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11)
 		RETURNING id
 	`
 	var newRecipeID int64
@@ -468,7 +482,7 @@ func (s *Store) CreatePrivateRecipe(c echo.Context) error {
 		req.Title, req.Description, 0, pq.Array(req.Tags), // XP is 0
 		req.Ingredients, req.Instructions,
 		"private", userID, // Status is 'private'
-		sqlImageURL, slug,
+		sqlImageURL, sqlSource, slug, // <-- ADDED sqlSource
 	).Scan(&newRecipeID)
 	// ---
 	if err != nil {
@@ -512,7 +526,7 @@ func (s *Store) GetMyPrivateRecipes(c echo.Context) error {
 		SELECT 
 			r.id, r.title, r.description, r.xp, r.tags, r.created_at, 
 			r.status, r.submitted_by_user_id, u.username AS submitted_by_username,
-			r.ingredients, r.instructions, r.image_url,
+			r.ingredients, r.instructions, r.image_url, r.source, -- Added r.source
 			COALESCE(AVG(l.rating), 0) AS avg_rating,
 			COUNT(l.id) AS cook_count,
 			r.is_featured, r.slug
@@ -537,7 +551,7 @@ func (s *Store) GetMyPrivateRecipes(c echo.Context) error {
 			&r.ID, &r.Title, &r.Description, &r.XP, &r.Tags,
 			&r.CreatedAt, &r.Status, &r.SubmittedByUserID,
 			&r.SubmittedByUsername,
-			&r.Ingredients, &r.Instructions, &r.ImageURL,
+			&r.Ingredients, &r.Instructions, &r.ImageURL, &r.Source, // Added &r.Source
 			&r.AvgRating, &r.CookCount,
 			&r.IsFeatured, &r.Slug,
 		); err != nil {
@@ -558,14 +572,6 @@ func (s *Store) UpdatePrivateRecipe(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid recipe ID"})
 	}
 
-	type PrivateRecipeRequest struct {
-		Title        string                  `json:"title"`
-		Description  string                  `json:"description"`
-		Tags         []string                `json:"tags"`
-		Ingredients  models.IngredientsList  `json:"ingredients"`
-		Instructions models.InstructionsList `json:"instructions"`
-		ImageURL     string                  `json:"image_url"`
-	}
 	var req PrivateRecipeRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
@@ -583,6 +589,12 @@ func (s *Store) UpdatePrivateRecipe(c echo.Context) error {
 	if req.ImageURL != "" {
 		sqlImageURL = sql.NullString{String: req.ImageURL, Valid: true}
 	}
+	// --- ADDED FOR SOURCE ---
+	var sqlSource sql.NullString
+	if req.Source != "" {
+		sqlSource = sql.NullString{String: req.Source, Valid: true}
+	}
+	// ---
 
 	slug := game.Slugify(req.Title) // Create slug
 
@@ -591,14 +603,14 @@ func (s *Store) UpdatePrivateRecipe(c echo.Context) error {
 		SET 
 			title = $1, description = $2, tags = $3,
 			ingredients = $4, instructions = $5, updated_at = NOW(),
-			image_url = $6, slug = $7
-		WHERE id = $8 AND submitted_by_user_id = $9 AND (status = 'private' OR status = 'rejected')
+			image_url = $6, source = $7, slug = $8
+		WHERE id = $9 AND submitted_by_user_id = $10 AND (status = 'private' OR status = 'rejected')
 	`
 	res, err := s.DB.Exec(
 		query,
 		req.Title, req.Description, pq.Array(req.Tags),
 		req.Ingredients, req.Instructions,
-		sqlImageURL, slug,
+		sqlImageURL, sqlSource, slug, // <-- ADDED sqlSource
 		recipeID, userID,
 	)
 	if err != nil {
@@ -697,7 +709,7 @@ func (s *Store) GetFeaturedRecipes(c echo.Context) error {
 		SELECT 
 			r.id, r.title, r.description, r.xp, r.tags, r.created_at, 
 			r.status, r.submitted_by_user_id, u.username AS submitted_by_username,
-			r.ingredients, r.instructions, r.image_url,
+			r.ingredients, r.instructions, r.image_url, r.source, -- Added r.source
 			COALESCE(AVG(l.rating), 0) AS avg_rating,
 			COUNT(l.id) AS cook_count,
 			r.is_featured, r.slug
@@ -722,7 +734,7 @@ func (s *Store) GetFeaturedRecipes(c echo.Context) error {
 			&r.ID, &r.Title, &r.Description, &r.XP, &r.Tags,
 			&r.CreatedAt, &r.Status, &r.SubmittedByUserID,
 			&r.SubmittedByUsername,
-			&r.Ingredients, &r.Instructions, &r.ImageURL,
+			&r.Ingredients, &r.Instructions, &r.ImageURL, &r.Source, // Added &r.Source
 			&r.AvgRating, &r.CookCount, &r.IsFeatured, &r.Slug,
 		); err != nil {
 			log.Printf("Error scanning featured recipe row: %v\n", err)
@@ -754,4 +766,342 @@ func (s *Store) ToggleRecipeFeature(c echo.Context) error {
 		"id":          recipeID,
 		"is_featured": isFeatured,
 	})
+}
+
+// ==================================================================
+// --- NEW: IMPORT FROM URL FUNCTIONALITY ---
+// ==================================================================
+
+// --- Structs for parsing schema.org JSON-LD ---
+
+// SchemaRecipe is the top-level struct for recipe JSON-LD
+type SchemaRecipe struct {
+	Type               any      `json:"@type"` // Can be string or array
+	Name               string   `json:"name"`
+	Description        string   `json:"description"`
+	Image              any      `json:"image"` // Can be string, array of strings, or object
+	RecipeIngredient   []string `json:"recipeIngredient"`
+	RecipeInstructions any      `json:"recipeInstructions"` // Can be array of steps, or array of HowToSection
+}
+
+// SchemaHowToStep is for parsing instructions
+type SchemaHowToStep struct {
+	Type string `json:"@type"`
+	Text string `json:"text"`
+}
+
+// SchemaHowToSection is for parsing grouped instructions
+type SchemaHowToSection struct {
+	Type     string            `json:"@type"`
+	Name     string            `json:"name"`
+	ItemList []SchemaHowToStep `json:"itemListElement"`
+}
+
+// --- End Schema Structs ---
+
+// ingredientRegex helps parse "1 1/2 cups flour"
+// Group 1: Quantity (e.g., "1 1/2")
+// Group 2: Unit (e.g., "cups")
+// Group 3: Name (e.g., "flour")
+var ingredientRegex = regexp.MustCompile(`^\s*([0-9/.\s-]+)\s*(cup|cups|oz|ounce|ounces|lb|lbs|pound|pounds|g|grams|kg|kilograms|ml|l|liter|liters|tsp|teaspoon|teaspoons|tbsp|tablespoon|tablespoons|each|pinch|dash)?\s*(.*)$`)
+
+// parseIngredientString turns a raw string into our model
+func parseIngredientString(raw string) models.Ingredient {
+	raw = strings.TrimSpace(raw)
+	// Simple check for section headers
+	if (strings.HasPrefix(raw, "For the") && strings.HasSuffix(raw, ":")) || (strings.HasPrefix(raw, "---") && strings.HasSuffix(raw, "---")) {
+		return models.Ingredient{
+			Type: "header",
+			Name: strings.Trim(raw, " -:"),
+		}
+	}
+
+	matches := ingredientRegex.FindStringSubmatch(raw)
+
+	if len(matches) == 4 {
+		// Full match: "1 1/2 cups flour"
+		unit := strings.ToLower(matches[2])
+		// Normalize units
+		switch unit {
+		case "cups":
+			unit = "cup"
+		case "ounce", "ounces":
+			unit = "oz"
+		case "pound", "pounds":
+			unit = "lb"
+		case "grams":
+			unit = "g"
+		case "kilograms":
+			unit = "kg"
+		case "liter", "liters":
+			unit = "l"
+		case "teaspoon", "teaspoons":
+			unit = "tsp"
+		case "tablespoon", "tablespoons":
+			unit = "tbsp"
+		case "":
+			unit = "each" // Default to 'each' if no unit is found
+		}
+
+		return models.Ingredient{
+			Type:        "ingredient",
+			QuantityStr: strings.TrimSpace(matches[1]),
+			Unit:        unit,
+			Name:        strings.TrimSpace(matches[3]),
+		}
+	}
+
+	// Fallback: No parsable quantity/unit
+	return models.Ingredient{
+		Type:        "ingredient",
+		QuantityStr: "",
+		Unit:        "each",
+		Name:        raw,
+	}
+}
+
+// findJsonLd searches an HTML node for a <script type="application/ld+json">
+// and returns its text content.
+// --- FIX 1: Removed unused 'isGraph' parameter ---
+func findJsonLd(n *html.Node) (string, bool) {
+	if n.Type == html.ElementNode && n.Data == "script" {
+		var isLdJson bool
+		for _, a := range n.Attr {
+			if a.Key == "type" && a.Val == "application/ld+json" {
+				isLdJson = true
+				break
+			}
+		}
+		if isLdJson {
+			for c := n.FirstChild; c != nil; c = c.NextSibling {
+				if c.Type == html.TextNode {
+					// Check if this JSON contains a "@graph"
+					if strings.Contains(c.Data, "\"@graph\"") {
+						return c.Data, true // Signal that this is a graph
+					}
+					return c.Data, false
+				}
+			}
+		}
+	}
+
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		// --- FIX 1 (continued): Fixed recursive call ---
+		if jsonStr, isGraph := findJsonLd(c); jsonStr != "" {
+			return jsonStr, isGraph
+		}
+	}
+	return "", false
+}
+
+// --- NEW HELPER FUNCTION ---
+// checkItemForRecipe tries to unmarshal a raw JSON message into a Recipe schema
+// and returns true if it's a valid recipe.
+func checkItemForRecipe(item json.RawMessage, schema *SchemaRecipe) bool {
+	var typeCheck struct {
+		Type any `json:"@type"`
+	}
+	if json.Unmarshal(item, &typeCheck) != nil {
+		return false // Not a valid schema object
+	}
+
+	isRecipe := false
+	if typeStr, ok := typeCheck.Type.(string); ok && strings.Contains(typeStr, "Recipe") {
+		isRecipe = true
+	} else if typeArr, ok := typeCheck.Type.([]interface{}); ok {
+		for _, t := range typeArr {
+			if str, ok := t.(string); ok && strings.Contains(str, "Recipe") {
+				isRecipe = true
+				break
+			}
+		}
+	}
+
+	if isRecipe {
+		// It is a recipe! Try to unmarshal the full schema
+		if json.Unmarshal(item, schema) == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// --- END HELPER FUNCTION ---
+
+// ImportRecipeFromURL handles the new import endpoint
+func (s *Store) ImportRecipeFromURL(c echo.Context) error {
+	// Note: We don't use userID here, but it's good that it's protected
+	// so only logged-in users can use this feature.
+
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request. 'url' is required."})
+	}
+	if req.URL == "" || !strings.HasPrefix(req.URL, "http") {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "A valid URL is required."})
+	}
+
+	// 1. Fetch the URL
+	client := &http.Client{}
+	httpReq, err := http.NewRequest("GET", req.URL, nil)
+	if err != nil {
+		log.Printf("Error creating request for %s: %v", req.URL, err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create request."})
+	}
+	// Set a user-agent to mimic a browser, as some sites block default Go user-agents
+	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		log.Printf("Error fetching URL %s: %v", req.URL, err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch the URL."})
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Could not access that URL. Status code: " + resp.Status})
+	}
+
+	// 2. Parse HTML to find JSON-LD
+	doc, err := html.Parse(resp.Body)
+	if err != nil {
+		log.Printf("Error parsing HTML for %s: %v", req.URL, err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to parse HTML."})
+	}
+
+	// --- FIX 1 (continued): Fixed initial call ---
+	jsonStr, _ := findJsonLd(doc) // We don't need 'isGraph' here anymore, the new parser handles it
+	if jsonStr == "" {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Could not find any recipe data on that page."})
+	}
+
+	// 3. Unmarshal and Map
+	var schema SchemaRecipe
+	var found bool
+
+	// --- NEW PARSER LOGIC ---
+	// Try to unmarshal into a single raw message first.
+	var rawData json.RawMessage
+	if err := json.Unmarshal([]byte(jsonStr), &rawData); err != nil {
+		log.Printf("Error parsing JSON-LD: %v", err)
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Failed to parse structured data."})
+	}
+
+	var jsonList []json.RawMessage
+	// Check if the raw data is an array `[` or an object `{`
+	if len(rawData) > 0 && rawData[0] == '[' {
+		// It's an array, unmarshal into a list
+		if err := json.Unmarshal(rawData, &jsonList); err != nil {
+			// Failed to unmarshal as array, treat as single object
+			jsonList = append(jsonList, rawData)
+		}
+	} else if len(rawData) > 0 && rawData[0] == '{' {
+		// It's a single object, add it to our list to be processed
+		jsonList = append(jsonList, rawData)
+	} else {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Unrecognized structured data format."})
+	}
+
+	// Now, iterate through our list of JSON objects
+	for _, item := range jsonList {
+		// First, check for a @graph
+		var graph struct {
+			Graph []json.RawMessage `json:"@graph"`
+		}
+		if json.Unmarshal(item, &graph) == nil && len(graph.Graph) > 0 {
+			// It's a graph object, iterate the graph
+			for _, graphItem := range graph.Graph {
+				if checkItemForRecipe(graphItem, &schema) {
+					found = true
+					break
+				}
+			}
+		} else {
+			// It's a regular object, check it directly
+			if checkItemForRecipe(item, &schema) {
+				found = true
+			}
+		}
+
+		if found {
+			break
+		}
+	}
+	// --- END NEW PARSER LOGIC ---
+
+	if !found {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Found structured data, but could not find a 'Recipe' object."})
+	}
+
+	// 4. Create a new models.Recipe from the schema
+	var newRecipe models.Recipe
+	newRecipe.Title = schema.Name
+	newRecipe.Description = schema.Description
+	newRecipe.Source = sql.NullString{String: req.URL, Valid: true}
+
+	// 5. Map Image --- REMOVED ---
+	// We are intentionally not importing the image URL to avoid
+	// copyright issues. The user will be prompted to upload their own.
+
+	// 6. Map Ingredients
+	newRecipe.Ingredients = []models.Ingredient{}
+	for _, rawIng := range schema.RecipeIngredient {
+		newRecipe.Ingredients = append(newRecipe.Ingredients, parseIngredientString(rawIng))
+	}
+
+	// 7. Map Instructions
+	newRecipe.Instructions = []models.Instruction{}
+	if steps, ok := schema.RecipeInstructions.([]interface{}); ok {
+		for _, step := range steps {
+			if stepStr, ok := step.(string); ok {
+				// Simple string array
+				newRecipe.Instructions = append(newRecipe.Instructions, models.Instruction{Step: stepStr})
+			} else if stepMap, ok := step.(map[string]interface{}); ok {
+				// Array of objects
+				if stepType, ok := stepMap["@type"].(string); ok {
+					if stepType == "HowToStep" {
+						if text, ok := stepMap["text"].(string); ok {
+							text = strings.TrimSpace(text)
+							if text != "" {
+								// --- FIX 2: Corrected 'newExample' to 'newRecipe' ---
+								newRecipe.Instructions = append(newRecipe.Instructions, models.Instruction{Step: text})
+							}
+						}
+					} else if stepType == "HowToSection" {
+						// This is a section header
+						if name, ok := stepMap["name"].(string); ok {
+							// Add a header to *ingredients*
+							newRecipe.Ingredients = append(newRecipe.Ingredients, models.Ingredient{Type: "header", Name: name})
+						}
+						// Add the steps from this section
+						if itemList, ok := stepMap["itemListElement"].([]interface{}); ok {
+							for _, item := range itemList {
+								if itemMap, ok := item.(map[string]interface{}); ok {
+									if text, ok := itemMap["text"].(string); ok {
+										text = strings.TrimSpace(text)
+										if text != "" {
+											newRecipe.Instructions = append(newRecipe.Instructions, models.Instruction{Step: text})
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	} else if instStr, ok := schema.RecipeInstructions.(string); ok {
+		// Just one big block of text, split by newline
+		for _, line := range strings.Split(instStr, "\n") {
+			if strings.TrimSpace(line) != "" {
+				newRecipe.Instructions = append(newRecipe.Instructions, models.Instruction{Step: line})
+			}
+		}
+	}
+
+	// 8. Return the partial recipe object to the frontend for review
+	log.Printf("Successfully imported recipe from %s", req.URL)
+	return c.JSON(http.StatusOK, newRecipe)
 }

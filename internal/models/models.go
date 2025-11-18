@@ -85,6 +85,9 @@ type Recipe struct {
 	CookCount           int              `json:"cook_count"`
 	IsFeatured          bool             `json:"is_featured"`
 	Slug                string           `json:"slug"`
+	PrepTimeMinutes     sql.NullInt64    `json:"prep_time_minutes"`
+	CookTimeMinutes     sql.NullInt64    `json:"cook_time_minutes"`
+	Servings            sql.NullString   `json:"servings"`
 }
 
 type PaginatedRecipes struct {
@@ -128,10 +131,10 @@ type Badge struct {
 	IconURL      sql.NullString   `json:"icon_url"`
 	BadgeType    string           `json:"badge_type"`
 	EarnedAt     sql.NullTime     `json:"earned_at,omitempty"`
-	StartDate    sql.NullTime     `json:"start_date,omitempty"` // For admin UI
-	EndDate      sql.NullTime     `json:"end_date,omitempty"`   // For admin UI
-	TriggerEvent string           `json:"trigger_event"`        // NEW: 'on_cook', 'on_approval'
-	RuleConfig   *json.RawMessage `json:"rule_config"`          // NEW: The JSON rule logic
+	StartDate    sql.NullTime     `json:"start_date,omitempty"`
+	EndDate      sql.NullTime     `json:"end_date,omitempty"`
+	TriggerEvent string           `json:"trigger_event"`
+	RuleConfig   *json.RawMessage `json:"rule_config"`
 }
 
 type UserProfile struct {

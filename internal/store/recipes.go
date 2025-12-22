@@ -177,6 +177,15 @@ func (s *Store) GetRecipeByID(c echo.Context) error {
 	return c.JSON(http.StatusOK, r)
 }
 
+func normalizeRecipeOrder(ingredients models.IngredientsList, instructions models.InstructionsList) {
+	for i := range ingredients {
+		ingredients[i].Order = i
+	}
+	for i := range instructions {
+		instructions[i].Order = i
+	}
+}
+
 // SubmitRecipe
 func (s *Store) SubmitRecipe(c echo.Context) error {
 	userID := c.Get("userID").(string)
@@ -207,6 +216,9 @@ func (s *Store) SubmitRecipe(c echo.Context) error {
 	if req.Instructions == nil {
 		req.Instructions = []models.Instruction{}
 	}
+
+	normalizeRecipeOrder(req.Ingredients, req.Instructions)
+
 	var sqlImageURL sql.NullString
 	if req.ImageURL != "" {
 		sqlImageURL = sql.NullString{String: req.ImageURL, Valid: true}
@@ -454,6 +466,9 @@ func (s *Store) CreatePrivateRecipe(c echo.Context) error {
 	if req.Instructions == nil {
 		req.Instructions = []models.Instruction{}
 	}
+
+	normalizeRecipeOrder(req.Ingredients, req.Instructions)
+
 	var sqlImageURL sql.NullString
 	if req.ImageURL != "" {
 		sqlImageURL = sql.NullString{String: req.ImageURL, Valid: true}
@@ -604,6 +619,9 @@ func (s *Store) UpdatePrivateRecipe(c echo.Context) error {
 	if req.Instructions == nil {
 		req.Instructions = []models.Instruction{}
 	}
+
+	normalizeRecipeOrder(req.Ingredients, req.Instructions)
+
 	var sqlImageURL sql.NullString
 	if req.ImageURL != "" {
 		sqlImageURL = sql.NullString{String: req.ImageURL, Valid: true}

@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/lib/pq"
@@ -37,7 +38,14 @@ func (il *IngredientsList) Scan(value interface{}) error {
 		*il = []Ingredient{}
 		return nil
 	}
-	return json.Unmarshal(b, il)
+	if err := json.Unmarshal(b, il); err != nil {
+		return err
+	}
+	// Sort by Order field
+	sort.Slice(*il, func(i, j int) bool {
+		return (*il)[i].Order < (*il)[j].Order
+	})
+	return nil
 }
 
 type Instruction struct {
@@ -62,7 +70,14 @@ func (il *InstructionsList) Scan(value interface{}) error {
 		*il = []Instruction{}
 		return nil
 	}
-	return json.Unmarshal(b, il)
+	if err := json.Unmarshal(b, il); err != nil {
+		return err
+	}
+	// Sort by Order field
+	sort.Slice(*il, func(i, j int) bool {
+		return (*il)[i].Order < (*il)[j].Order
+	})
+	return nil
 }
 
 // --- End JSONB Structs ---

@@ -17,6 +17,7 @@ type Ingredient struct {
 	Name        string `json:"name"`                   // For header: title, For ingredient: name
 	QuantityStr string `json:"quantity_str,omitempty"` // "1 1/2", "0.5", "100"
 	Unit        string `json:"unit,omitempty"`         // "cup", "g", "tsp"
+	Order       int    `json:"order"`                  // Explicit ordering
 }
 type IngredientsList []Ingredient
 
@@ -40,7 +41,8 @@ func (il *IngredientsList) Scan(value interface{}) error {
 }
 
 type Instruction struct {
-	Step string `json:"step"`
+	Step  string `json:"step"`
+	Order int    `json:"order"` // Explicit ordering
 }
 type InstructionsList []Instruction
 

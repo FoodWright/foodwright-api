@@ -49,6 +49,7 @@ func (il *IngredientsList) Scan(value interface{}) error {
 }
 
 type Instruction struct {
+	Type  string `json:"type"` // "instruction" or "header"
 	Step  string `json:"step"`
 	Order int    `json:"order"` // Explicit ordering
 }

@@ -72,3 +72,39 @@ func TestInstructionsListSorting(t *testing.T) {
 		t.Errorf("Expected index 2 to be Eat (2), got %s (%d)", il[2].Step, il[2].Order)
 	}
 }
+
+func TestInstructionType(t *testing.T) {
+	tests := []struct {
+		name     string
+		jsonStr  string
+		expected string
+	}{
+		{
+			name:     "Instruction with type",
+			jsonStr:  `{"type":"instruction","step":"Mix","order":0}`,
+			expected: "instruction",
+		},
+		{
+			name:     "Header with type",
+			jsonStr:  `{"type":"header","step":"Filling","order":1}`,
+			expected: "header",
+		},
+		{
+			name:     "Implicit instruction",
+			jsonStr:  `{"step":"Bake","order":2}`,
+			expected: "", // Default value for string if not present in JSON
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var i Instruction
+			if err := json.Unmarshal([]byte(tt.jsonStr), &i); err != nil {
+				t.Fatalf("Failed to unmarshal instruction: %v", err)
+			}
+			if i.Type != tt.expected {
+				t.Errorf("Expected Type %s, got %s", tt.expected, i.Type)
+			}
+		})
+	}
+}

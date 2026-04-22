@@ -69,7 +69,7 @@ func (s *Store) GetPublicCookLogs(c echo.Context) error {
 		SELECT l.id, l.recipe_id, r.title, l.created_at, l.notes, l.rating
 		FROM user_cooks_log l
 		JOIN recipes r ON l.recipe_id = r.id
-		WHERE l.user_id = $1 AND r.status = 'approved'
+		WHERE l.user_id = $1 AND r.status = 'public'
 		ORDER BY l.created_at DESC
 		LIMIT 10
 	`
@@ -148,13 +148,24 @@ func (s *Store) LogCook(c echo.Context) error {
 
 	// --- LOGIC ORDER FIX ---
 	// 1. INSERT the cook log *first*, so the count is accurate.
-	_, err = tx.Exec(
-		"INSERT INTO user_cooks_log (user_id, recipe_id, notes, rating) VALUES ($1, $2, $3, $4)",
+	var cookLogID int64
+	err = tx.QueryRow(
+		"INSERT INTO user_cooks_log (user_id, recipe_id, notes, rating) VALUES ($1, $2, $3, $4) RETURNING id",
 		userID, recipeID, sqlNotes, sqlRating,
-	)
+	).Scan(&cookLogID)
 	if err != nil {
 		log.Printf("Error inserting cook log: %v\n", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to log cook record"})
+	}
+
+	// Create feed post for this cook log
+	_, err = tx.Exec(
+		"INSERT INTO posts (user_id, post_type, recipe_id, cook_log_id) VALUES ($1, 'cook_log', $2, $3)",
+		userID, recipeID, cookLogID,
+	)
+	if err != nil {
+		log.Printf("Error creating feed post for cook log: %v\n", err)
+		// Continue even if post creation fails
 	}
 
 	// 2. NOW check for badges, with the new log in the database.

@@ -102,27 +102,21 @@ func main() {
 
 	protected.POST("/recipes/:id/comments", s.PostRecipeComment)
 
-	// --- Admin Routes (Guild Moderator) ---
-	admin := api.Group("/admin")
-	admin.Use(authHandler.FirebaseMiddleware)
-	admin.Use(authHandler.AdminMiddleware)
+	// --- Social Routes ---
+	protected.POST("/users/:id/follow", s.FollowUser)
+	protected.DELETE("/users/:id/follow", s.UnfollowUser)
+	protected.GET("/users/:id/followers", s.GetFollowers)
+	protected.GET("/users/:id/following", s.GetFollowing)
+	protected.GET("/feed", s.GetFeed)
+	protected.POST("/posts/quick", s.CreateQuickPost)
+	protected.POST("/recipes/:id/share", s.ShareRecipeToFeed)
+	protected.POST("/posts/:id/like", s.LikePost)
+	protected.POST("/posts/:id/repost", s.RepostToFeed)
+	protected.DELETE("/posts/:id", s.DeletePost)
 
-	admin.GET("/pending-recipes", s.GetPendingRecipes)
-	admin.POST("/recipes/:id/approve", s.ApproveRecipe)
-	admin.POST("/recipes/:id/reject", s.RejectRecipe)
-
-	// --- NEW: Site Admin Routes (Site Owner) ---
-	siteAdmin := api.Group("/site-admin")
-	siteAdmin.Use(authHandler.FirebaseMiddleware)
-	siteAdmin.Use(authHandler.SiteAdminMiddleware) // <-- Use new middleware
-
-	siteAdmin.GET("/badges", s.GetAllBadges)
-	siteAdmin.POST("/badges", s.CreateBadge)
-	siteAdmin.PUT("/badges/:id", s.UpdateBadge)
-	siteAdmin.POST("/recipes/:id/toggle-feature", s.ToggleRecipeFeature)
-	// We'll skip DELETE for now to be safe
-	// siteAdmin.DELETE("/badges/:id", s.DeleteBadge)
-	// ---
+	// Public social routes
+	api.GET("/explore", s.GetExploreFeed)
+	api.GET("/users/:id/posts", s.GetUserPosts)
 
 	// Start the server
 	port := os.Getenv("PORT")

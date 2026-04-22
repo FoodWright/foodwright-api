@@ -164,17 +164,21 @@ type UserProfile struct {
 	IsAdmin        bool      `json:"is_admin"`
 	IsSiteAdmin    bool      `json:"is_site_admin"`
 	UnitPreference string    `json:"unit_preference"` // "imperial" or "metric"
+	FollowerCount  int       `json:"follower_count"`
+	FollowingCount int       `json:"following_count"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type PublicUserProfile struct {
-	ID        string    `json:"id"`
-	Username  string    `json:"username"`
-	Rank      string    `json:"rank"`
-	XP        int       `json:"xp"`
-	Badges    []Badge   `json:"badges"`
-	CreatedAt time.Time `json:"created_at"`
+	ID             string    `json:"id"`
+	Username       string    `json:"username"`
+	Rank           string    `json:"rank"`
+	XP             int       `json:"xp"`
+	Badges         []Badge   `json:"badges"`
+	FollowerCount  int       `json:"follower_count"`
+	FollowingCount int       `json:"following_count"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // --- End Model Structs ---
@@ -186,4 +190,35 @@ type PublicCookLog struct {
 	LoggedAt    time.Time `json:"logged_at"`
 	Notes       *string   `json:"notes"`
 	Rating      *int64    `json:"rating"`
+}
+
+// Post represents a feed item (cook_log, recipe_share, or quick_post)
+type Post struct {
+	ID          int64          `json:"id"`
+	UserID      string         `json:"user_id"`
+	Username    string         `json:"username"`
+	UserRank    string         `json:"user_rank"`
+	PostType    string         `json:"post_type"` // 'cook_log', 'recipe_share', 'quick_post'
+	RecipeID    sql.NullInt64  `json:"recipe_id"`
+	RecipeTitle sql.NullString `json:"recipe_title"`
+	RecipeSlug  sql.NullString `json:"recipe_slug"`
+	RecipeImage sql.NullString `json:"recipe_image"`
+	CookLogID   sql.NullInt64  `json:"cook_log_id"`
+	Rating      sql.NullInt64  `json:"rating"`
+	Notes       sql.NullString `json:"notes"`
+	Content     sql.NullString `json:"content"`
+	LikeCount   int            `json:"like_count"`
+	RepostCount int            `json:"repost_count"`
+	IsLiked     bool           `json:"is_liked"`
+	IsReposted  bool           `json:"is_reposted"`
+	CreatedAt   time.Time      `json:"created_at"`
+}
+
+// Follow represents a user follow relationship
+type Follow struct {
+	FollowerID string    `json:"follower_id"`
+	FollowedID string    `json:"followed_id"`
+	Username   string    `json:"username"`
+	Rank       string    `json:"rank"`
+	CreatedAt  time.Time `json:"created_at"`
 }

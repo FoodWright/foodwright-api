@@ -52,7 +52,7 @@ func (s *Store) GetRecipes(c echo.Context) error {
 	` + baseQuery
 
 	// MODIFIED: Filter out featured recipes from the main paginated list
-	whereClauses := []string{"r.status = 'approved'", "r.is_featured = FALSE"}
+	whereClauses := []string{"r.status = 'public'", "r.is_featured = FALSE"}
 	args := []interface{}{}
 	argCount := 1
 
@@ -226,10 +226,17 @@ func (s *Store) SubmitRecipe(c echo.Context) error {
 
 	slug := game.Slugify(req.Title) // Create slug
 
+	tx, err := s.DB.Begin()
+	if err != nil {
+		log.Printf("Failed to begin transaction: %v\n", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Database error"})
+	}
+	defer tx.Rollback()
+
 	query := `
 		INSERT INTO recipes (
-			title, description, xp, tags, 
-			ingredients, instructions, 
+			title, description, xp, tags,
+			ingredients, instructions,
 			status, submitted_by_user_id,
 			image_url, created_at, updated_at, slug
 		)
@@ -237,11 +244,11 @@ func (s *Store) SubmitRecipe(c echo.Context) error {
 		RETURNING id
 	`
 	var newRecipeID int64
-	err := s.DB.QueryRow(
+	err = tx.QueryRow(
 		query,
 		req.Title, req.Description, req.XP, pq.Array(req.Tags),
 		req.Ingredients, req.Instructions,
-		"pending", userID,
+		"public", userID,
 		sqlImageURL, slug,
 	).Scan(&newRecipeID)
 	if err != nil {
@@ -251,10 +258,40 @@ func (s *Store) SubmitRecipe(c echo.Context) error {
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to submit recipe"})
 	}
-	log.Printf("User %s submitted new recipe (ID: %d)", userID, newRecipeID)
+
+	// Award 50 XP for publishing recipe
+	var currentXP int
+	err = tx.QueryRow("SELECT xp FROM users WHERE id = $1", userID).Scan(&currentXP)
+	if err != nil {
+		log.Printf("Error getting user XP: %v\n", err)
+	} else {
+		newXP := currentXP + 50
+		_, err = tx.Exec("UPDATE users SET xp = $1, updated_at = NOW() WHERE id = $2", newXP, userID)
+		if err != nil {
+			log.Printf("Error updating XP: %v\n", err)
+		}
+	}
+
+	// Create feed post for recipe share
+	_, err = tx.Exec(
+		"INSERT INTO posts (user_id, post_type, recipe_id) VALUES ($1, 'recipe_share', $2)",
+		userID, newRecipeID,
+	)
+	if err != nil {
+		log.Printf("Error creating feed post for recipe: %v\n", err)
+		// Continue even if post creation fails
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("Error committing recipe submission: %v\n", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to submit recipe"})
+	}
+
+	log.Printf("User %s published new recipe (ID: %d, +50 XP)", userID, newRecipeID)
 	return c.JSON(http.StatusCreated, map[string]interface{}{
-		"message":  "Recipe submitted for review!",
-		"recipeId": newRecipeID,
+		"message":    "Recipe published successfully!",
+		"recipeId":   newRecipeID,
+		"xp_granted": 50,
 	})
 }
 
@@ -304,136 +341,7 @@ func (s *Store) GetMySubmissions(c echo.Context) error {
 	return c.JSON(http.StatusOK, recipes)
 }
 
-// GetPendingRecipes fetches all recipes with a 'pending' status for admin review.
-func (s *Store) GetPendingRecipes(c echo.Context) error {
-	query := `
-		SELECT 
-			r.id, r.title, r.description, r.xp, r.tags, r.created_at, 
-			r.status, r.submitted_by_user_id, u.username AS submitted_by_username,
-			r.ingredients, r.instructions, r.image_url, r.source,
-			COALESCE(AVG(l.rating), 0) AS avg_rating,
-			COUNT(l.id) AS cook_count,
-			r.is_featured, r.slug,
-			r.prep_time_minutes, r.cook_time_minutes, r.servings
-		FROM recipes r
-		LEFT JOIN users u ON r.submitted_by_user_id = u.id
-		LEFT JOIN user_cooks_log l ON r.id = l.recipe_id
-		WHERE r.status = 'pending'
-		GROUP BY r.id, u.username
-		ORDER BY r.created_at ASC
-	`
-
-	rows, err := s.DB.Query(query)
-	if err != nil {
-		log.Printf("Error querying pending recipes: %v\n", err)
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch pending recipes"})
-	}
-	defer rows.Close()
-	var recipes []models.Recipe
-	for rows.Next() {
-		var r models.Recipe
-		if err := rows.Scan(
-			&r.ID, &r.Title, &r.Description, &r.XP, &r.Tags,
-			&r.CreatedAt, &r.Status, &r.SubmittedByUserID,
-			&r.SubmittedByUsername,
-			&r.Ingredients, &r.Instructions, &r.ImageURL, &r.Source,
-			&r.AvgRating, &r.CookCount,
-			&r.IsFeatured, &r.Slug,
-			&r.PrepTimeMinutes, &r.CookTimeMinutes, &r.Servings, // Added new fields
-		); err != nil {
-			log.Printf("Error scanning recipe row: %v\n", err)
-			continue
-		}
-		recipes = append(recipes, r)
-	}
-	return c.JSON(http.StatusOK, recipes)
-}
-
-// ApproveRecipe allows an admin to approve a recipe and set its XP
-func (s *Store) ApproveRecipe(c echo.Context) error {
-	recipeIDStr := c.Param("id")
-	recipeID, err := strconv.ParseInt(recipeIDStr, 10, 64)
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid recipe ID"})
-	}
-
-	// --- NEW: Bind the request to get the XP value ---
-	type ApproveRequest struct {
-		XP int `json:"xp"`
-	}
-	var req ApproveRequest
-	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
-	}
-	if req.XP < 10 || req.XP > 100 {
-		log.Printf("Admin specified invalid XP %d for recipe %d, defaulting to 10.", req.XP, recipeID)
-		req.XP = 10
-	}
-	// ---
-
-	tx, err := s.DB.Begin()
-	if err != nil {
-		log.Printf("Failed to begin transaction: %v\n", err)
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Database error"})
-	}
-	defer tx.Rollback()
-
-	var submitterID sql.NullString
-	// --- MODIFIED: Update XP along with status ---
-	err = tx.QueryRow(
-		"UPDATE recipes SET status = 'approved', xp = $1, updated_at = NOW() WHERE id = $2 RETURNING submitted_by_user_id",
-		req.XP, recipeID,
-	).Scan(&submitterID)
-	// ---
-	if err != nil {
-		log.Printf("Error approving recipe %d: %v", recipeID, err)
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to approve recipe"})
-	}
-
-	if submitterID.Valid {
-		submitterUserID := submitterID.String
-		const approvalXP = 250 // Base XP for getting *any* recipe approved
-
-		// --- MODIFIED: Call new dynamic badge engine ---
-		newlyAwardedBadges, err := game.CheckAndAwardBadges(tx, submitterUserID, recipeID, "on_approval")
-		if err != nil {
-			log.Printf("Error checking for 'on_approval' badges for user %s: %v", submitterUserID, err)
-		} else if len(newlyAwardedBadges) > 0 {
-			log.Printf("User %s awarded new badges: %v", submitterUserID, newlyAwardedBadges)
-		}
-		// ---
-
-		_, err = tx.Exec(
-			"UPDATE users SET xp = xp + $1, updated_at = NOW() WHERE id = $2",
-			approvalXP, submitterUserID,
-		)
-		if err != nil {
-			log.Printf("Failed to award approval XP to user %s: %v", submitterUserID, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		log.Printf("Error committing recipe approval: %v\n", err)
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to save approval"})
-	}
-	log.Printf("Recipe %d approved with %d XP by admin %s", recipeID, req.XP, c.Get("userID"))
-	return c.JSON(http.StatusOK, map[string]string{"message": "Recipe approved and XP awarded!"})
-}
-
-// RejectRecipe (no changes)
-func (s *Store) RejectRecipe(c echo.Context) error {
-	recipeIDStr := c.Param("id")
-	recipeID, err := strconv.ParseInt(recipeIDStr, 10, 64)
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid recipe ID"})
-	}
-	_, err = s.DB.Exec("UPDATE recipes SET status = 'rejected', updated_at = NOW() WHERE id = $1", recipeID)
-	if err != nil {
-		log.Printf("Error rejecting recipe %d: %v", recipeID, err)
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to reject recipe"})
-	}
-	log.Printf("Recipe %d rejected by admin %s", recipeID, c.Get("userID"))
-	return c.JSON(http.StatusOK, map[string]string{"message": "Recipe rejected."})
-}
+// Admin approval functions removed - recipes are now published immediately as 'public'
 
 // PrivateRecipeRequest is the struct for creating/updating private recipes
 type PrivateRecipeRequest struct {
@@ -732,7 +640,7 @@ func (s *Store) SubmitPrivateRecipe(c echo.Context) error {
 
 	query := `
 		UPDATE recipes
-		SET status = 'pending', updated_at = NOW(), slug = $1
+		SET status = 'public', updated_at = NOW(), slug = $1
 		WHERE id = $2 AND submitted_by_user_id = $3 AND status = 'private'
 	`
 	res, err := s.DB.Exec(query, slug, recipeID, userID)
@@ -747,8 +655,8 @@ func (s *Store) SubmitPrivateRecipe(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Private recipe not found or you do not have permission."})
 	}
 
-	log.Printf("User %s submitted private recipe (ID: %d) for review", userID, recipeID)
-	return c.JSON(http.StatusOK, map[string]string{"message": "Recipe submitted to Guild for review!"})
+	log.Printf("User %s published private recipe (ID: %d)", userID, recipeID)
+	return c.JSON(http.StatusOK, map[string]string{"message": "Recipe published successfully!"})
 }
 
 // GetFeaturedRecipes fetches all approved recipes marked as "is_featured"
@@ -765,7 +673,7 @@ func (s *Store) GetFeaturedRecipes(c echo.Context) error {
 		FROM recipes r
 		LEFT JOIN users u ON r.submitted_by_user_id = u.id
 		LEFT JOIN user_cooks_log l ON r.id = l.recipe_id
-		WHERE r.is_featured = TRUE AND r.status = 'approved'
+		WHERE r.is_featured = TRUE AND r.status = 'public'
 		GROUP BY r.id, u.username
 		ORDER BY r.updated_at DESC
 	`

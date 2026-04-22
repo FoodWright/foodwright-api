@@ -18,10 +18,12 @@ func (s *Store) GetProfile(c echo.Context) error {
 
 	var profile models.UserProfile
 	query := `
-		SELECT id, username, rank, xp, created_at, updated_at, 
-		       is_admin, is_site_admin, unit_preference 
+		SELECT id, username, rank, xp, created_at, updated_at,
+		       is_admin, is_site_admin, unit_preference,
+		       COALESCE(follower_count, 0), COALESCE(following_count, 0)
 		FROM users WHERE id = $1
 	`
+	var followerCount, followingCount int
 	err := s.DB.QueryRow(query, userID).Scan(
 		&profile.ID,
 		&profile.Username,
@@ -32,6 +34,8 @@ func (s *Store) GetProfile(c echo.Context) error {
 		&profile.IsAdmin,
 		&profile.IsSiteAdmin,
 		&profile.UnitPreference,
+		&followerCount,
+		&followingCount,
 	)
 
 	if err == sql.ErrNoRows {
@@ -85,6 +89,9 @@ func (s *Store) GetProfile(c echo.Context) error {
 		profile.Badges = badges
 	}
 
+	profile.FollowerCount = followerCount
+	profile.FollowingCount = followingCount
+
 	return c.JSON(http.StatusOK, profile)
 }
 
@@ -95,14 +102,17 @@ func (s *Store) GetPublicProfile(c echo.Context) error {
 
 	var profile models.PublicUserProfile
 	// NOTE: We don't select unit_preference here, as it's not public
-	query := "SELECT id, username, rank, xp, created_at FROM users WHERE id = $1"
+	query := "SELECT id, username, rank, xp, created_at, COALESCE(follower_count, 0), COALESCE(following_count, 0) FROM users WHERE id = $1"
 
+	var followerCount, followingCount int
 	err := s.DB.QueryRow(query, userID).Scan(
 		&profile.ID,
 		&profile.Username,
 		&profile.Rank,
 		&profile.XP,
 		&profile.CreatedAt,
+		&followerCount,
+		&followingCount,
 	)
 
 	if err == sql.ErrNoRows {
@@ -120,6 +130,9 @@ func (s *Store) GetPublicProfile(c echo.Context) error {
 	} else {
 		profile.Badges = badges
 	}
+
+	profile.FollowerCount = followerCount
+	profile.FollowingCount = followingCount
 
 	return c.JSON(http.StatusOK, profile)
 }

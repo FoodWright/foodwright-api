@@ -204,19 +204,25 @@ func evaluateRule(tx *sql.Tx, userID string, recipeID int64, ruleConfig *json.Ra
 		err = tx.QueryRow(query, userID, config.Parameter).Scan(&count)
 
 	case "APPROVED_SUBMISSIONS":
-		query := "SELECT COUNT(*) FROM recipes WHERE submitted_by_user_id = $1 AND status = 'approved'"
+		// Updated for new social model - recipes are published as 'public'
+		query := "SELECT COUNT(*) FROM recipes WHERE submitted_by_user_id = $1 AND status = 'public'"
 		err = tx.QueryRow(query, userID).Scan(&count)
 
-	// --- NEW: Rule for Private Recipes ---
 	case "TOTAL_PRIVATE_RECIPES":
 		query := "SELECT COUNT(*) FROM recipes WHERE submitted_by_user_id = $1 AND status = 'private'"
 		err = tx.QueryRow(query, userID).Scan(&count)
-	// ---
 
-	// --- Add new rule types here in the future ---
-	// case "TOTAL_COMMENTS":
-	// 	query := "SELECT COUNT(*) FROM recipe_comments WHERE user_id = $1"
-	// 	err = tx.QueryRow(query, userID).Scan(&count)
+	case "TOTAL_FOLLOWERS":
+		query := "SELECT COALESCE(follower_count, 0) FROM users WHERE id = $1"
+		err = tx.QueryRow(query, userID).Scan(&count)
+
+	case "TOTAL_QUICK_POSTS":
+		query := "SELECT COUNT(*) FROM posts WHERE user_id = $1 AND post_type = 'quick_post'"
+		err = tx.QueryRow(query, userID).Scan(&count)
+
+	case "TOTAL_RECIPE_SHARES":
+		query := "SELECT COUNT(*) FROM posts WHERE user_id = $1 AND post_type = 'recipe_share'"
+		err = tx.QueryRow(query, userID).Scan(&count)
 
 	default:
 		return false, fmt.Errorf("unknown rule type: %s", config.Type)

@@ -15,7 +15,10 @@ func (s *Store) CreateQuickPost(c echo.Context) error {
 	userID := c.Get("userID").(string)
 
 	type CreatePostRequest struct {
-		Content string `json:"content"`
+		Content     string `json:"content"`
+		ImageURL    string `json:"image_url"`
+		RecipeID    *int64 `json:"recipe_id"`
+		ExternalURL string `json:"external_url"`
 	}
 	var req CreatePostRequest
 	if err := c.Bind(&req); err != nil {
@@ -24,8 +27,8 @@ func (s *Store) CreateQuickPost(c echo.Context) error {
 
 	// Validate content
 	content := strings.TrimSpace(req.Content)
-	if content == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Content cannot be empty"})
+	if content == "" && req.ImageURL == "" && req.ExternalURL == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Post must have content, an image, or a link"})
 	}
 	if len(content) > 500 {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Content cannot exceed 500 characters"})
@@ -40,10 +43,25 @@ func (s *Store) CreateQuickPost(c echo.Context) error {
 
 	// Create post
 	var postID int64
-	err = tx.QueryRow(
-		"INSERT INTO posts (user_id, post_type, content) VALUES ($1, 'quick_post', $2) RETURNING id",
-		userID, content,
-	).Scan(&postID)
+	var sqlImageURL sql.NullString
+	if req.ImageURL != "" {
+		sqlImageURL = sql.NullString{String: req.ImageURL, Valid: true}
+	}
+	var sqlRecipeID sql.NullInt64
+	if req.RecipeID != nil {
+		sqlRecipeID = sql.NullInt64{Int64: *req.RecipeID, Valid: true}
+	}
+	var sqlExternalURL sql.NullString
+	if req.ExternalURL != "" {
+		sqlExternalURL = sql.NullString{String: req.ExternalURL, Valid: true}
+	}
+
+	query := `
+		INSERT INTO posts (user_id, post_type, content, image_url, recipe_id, external_url) 
+		VALUES ($1, 'quick_post', $2, $3, $4, $5) 
+		RETURNING id
+	`
+	err = tx.QueryRow(query, userID, content, sqlImageURL, sqlRecipeID, sqlExternalURL).Scan(&postID)
 	if err != nil {
 		log.Printf("Error creating quick post: %v\n", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create post"})

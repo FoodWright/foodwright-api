@@ -66,7 +66,7 @@ func (s *Store) GetPublicCookLogs(c echo.Context) error {
 	userID := c.Param("id")
 	log.Printf("Fetching PUBLIC cook logs for user: %s", userID)
 	query := `
-		SELECT l.id, l.recipe_id, r.title, l.created_at, l.notes, l.rating
+		SELECT l.id, l.recipe_id, r.title, l.created_at, l.notes, l.rating, l.image_url
 		FROM user_cooks_log l
 		JOIN recipes r ON l.recipe_id = r.id
 		WHERE l.user_id = $1 AND r.status = 'public'
@@ -84,7 +84,8 @@ func (s *Store) GetPublicCookLogs(c echo.Context) error {
 		var l models.PublicCookLog
 		var sqlNotes sql.NullString
 		var sqlRating sql.NullInt64
-		if err := rows.Scan(&l.LogID, &l.RecipeID, &l.RecipeTitle, &l.LoggedAt, &sqlNotes, &sqlRating); err != nil {
+		var sqlImageURL sql.NullString
+		if err := rows.Scan(&l.LogID, &l.RecipeID, &l.RecipeTitle, &l.LoggedAt, &sqlNotes, &sqlRating, &sqlImageURL); err != nil {
 			log.Printf("Error scanning public cook log row: %v\n", err)
 			continue
 		}
@@ -93,6 +94,9 @@ func (s *Store) GetPublicCookLogs(c echo.Context) error {
 		}
 		if sqlRating.Valid {
 			l.Rating = &sqlRating.Int64
+		}
+		if sqlImageURL.Valid {
+			l.ImageURL = &sqlImageURL.String
 		}
 		logs = append(logs, l)
 	}
@@ -108,8 +112,9 @@ func (s *Store) LogCook(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid recipe ID"})
 	}
 	type LogCookRequest struct {
-		Notes  string `json:"notes"`
-		Rating *int   `json:"rating"`
+		Notes    string `json:"notes"`
+		Rating   *int   `json:"rating"`
+		ImageURL string `json:"image_url"`
 	}
 	var req LogCookRequest
 	if err := c.Bind(&req); err != nil {
@@ -122,6 +127,10 @@ func (s *Store) LogCook(c echo.Context) error {
 	var sqlRating sql.NullInt64
 	if req.Rating != nil && *req.Rating > 0 {
 		sqlRating = sql.NullInt64{Int64: int64(*req.Rating), Valid: true}
+	}
+	var sqlImageURL sql.NullString
+	if req.ImageURL != "" {
+		sqlImageURL = sql.NullString{String: req.ImageURL, Valid: true}
 	}
 
 	tx, err := s.DB.Begin()
@@ -150,8 +159,8 @@ func (s *Store) LogCook(c echo.Context) error {
 	// 1. INSERT the cook log *first*, so the count is accurate.
 	var cookLogID int64
 	err = tx.QueryRow(
-		"INSERT INTO user_cooks_log (user_id, recipe_id, notes, rating) VALUES ($1, $2, $3, $4) RETURNING id",
-		userID, recipeID, sqlNotes, sqlRating,
+		"INSERT INTO user_cooks_log (user_id, recipe_id, notes, rating, image_url) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+		userID, recipeID, sqlNotes, sqlRating, sqlImageURL,
 	).Scan(&cookLogID)
 	if err != nil {
 		log.Printf("Error inserting cook log: %v\n", err)
@@ -160,8 +169,8 @@ func (s *Store) LogCook(c echo.Context) error {
 
 	// Create feed post for this cook log
 	_, err = tx.Exec(
-		"INSERT INTO posts (user_id, post_type, recipe_id, cook_log_id) VALUES ($1, 'cook_log', $2, $3)",
-		userID, recipeID, cookLogID,
+		"INSERT INTO posts (user_id, post_type, recipe_id, cook_log_id, image_url) VALUES ($1, 'cook_log', $2, $3, $4)",
+		userID, recipeID, cookLogID, sqlImageURL,
 	)
 	if err != nil {
 		log.Printf("Error creating feed post for cook log: %v\n", err)

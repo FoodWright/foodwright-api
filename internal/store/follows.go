@@ -1,7 +1,6 @@
 package store
 
 import (
-	"database/sql"
 	"log"
 	"net/http"
 

@@ -1,11 +1,11 @@
 package store
-
 import (
 	"database/sql"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
+	"strings"
+	"net/http"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -31,6 +31,17 @@ func InitDB(connStr string) (*sql.DB, error) {
 	if connStr == "" {
 		return nil, fmt.Errorf("NEON_DATABASE_URL is not set")
 	}
+
+	// Fix for PgBouncer / Neon connection pooling issues with prepared statements
+	if !strings.Contains(connStr, "prepare_threshold=") {
+		separator := "?"
+		if strings.Contains(connStr, "?") {
+			separator = "&"
+		}
+		// prepare_threshold=0 disables prepared statements entirely in lib/pq
+		connStr += separator + "prepare_threshold=0"
+	}
+
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		return nil, err

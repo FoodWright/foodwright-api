@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"math"
 	"net/http"
@@ -11,7 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// GetFeed returns the authenticated user's personalized feed (posts from followed users)
+// GetFeed returns the authenticated user's personalized feed (their posts + followed users + followed users' reposts)
 func (s *Store) GetFeed(c echo.Context) error {
 	userID := c.Get("userID").(string)
 	pageStr := c.QueryParam("page")
@@ -23,49 +24,95 @@ func (s *Store) GetFeed(c echo.Context) error {
 	const limit = 20
 	offset := (page - 1) * limit
 
-	query := `
+	// Optimized query to get original posts AND reposts from followed users, newest first
+	query := fmt.Sprintf(`
+		WITH raw_feed AS (
+			-- User's own posts
+			SELECT id AS post_id, created_at, NULL AS reposted_by_username
+			FROM posts
+			WHERE user_id = '%s'
+
+			UNION ALL
+
+			-- Posts from followed users
+			SELECT id AS post_id, created_at, NULL AS reposted_by_username
+			FROM posts
+			WHERE user_id IN (SELECT followed_id FROM user_follows WHERE follower_id = '%s')
+
+			UNION ALL
+
+			-- Reposts from followed users
+			SELECT pr.original_post_id AS post_id, pr.created_at, u.username AS reposted_by_username
+			FROM post_reposts pr
+			JOIN users u ON pr.user_id = u.id
+			WHERE pr.user_id IN (SELECT followed_id FROM user_follows WHERE follower_id = '%s')
+		),
+		deduped_feed AS (
+			SELECT DISTINCT ON (post_id) post_id, created_at, reposted_by_username
+			FROM raw_feed
+			ORDER BY post_id, created_at DESC
+		)
 		SELECT
 			p.id, p.user_id, u.username, u.rank, p.post_type,
 			p.recipe_id, r.title, r.slug, r.image_url,
 			p.cook_log_id, cl.rating, cl.notes,
-			p.content, p.created_at,
-			COUNT(DISTINCT pl.user_id) as like_count,
-			COUNT(DISTINCT pr.id) as repost_count,
-			EXISTS(SELECT 1 FROM post_likes WHERE post_id = p.id AND user_id = $1) as is_liked,
-			EXISTS(SELECT 1 FROM post_reposts WHERE original_post_id = p.id AND user_id = $1) as is_reposted
-		FROM posts p
+			p.content, p.image_url, p.external_url, f.created_at,
+			(SELECT COUNT(*) FROM post_likes WHERE post_id = p.id) as like_count,
+			(SELECT COUNT(*) FROM post_reposts WHERE original_post_id = p.id) as repost_count,
+			EXISTS(SELECT 1 FROM post_likes WHERE post_id = p.id AND user_id = '%s') as is_liked,
+			EXISTS(SELECT 1 FROM post_reposts WHERE original_post_id = p.id AND user_id = '%s') as is_reposted,
+			f.reposted_by_username
+		FROM deduped_feed f
+		JOIN posts p ON f.post_id = p.id
 		JOIN users u ON p.user_id = u.id
-		JOIN user_follows uf ON p.user_id = uf.followed_id
 		LEFT JOIN recipes r ON p.recipe_id = r.id
 		LEFT JOIN user_cooks_log cl ON p.cook_log_id = cl.id
-		LEFT JOIN post_likes pl ON p.id = pl.post_id
-		LEFT JOIN post_reposts pr ON p.id = pr.original_post_id
-		WHERE uf.follower_id = $1
-		GROUP BY p.id, u.username, u.rank, r.title, r.slug, r.image_url, cl.rating, cl.notes
-		ORDER BY p.created_at DESC
-		LIMIT $2 OFFSET $3
-	`
+		ORDER BY f.created_at DESC
+		LIMIT %d OFFSET %d
+	`, userID, userID, userID, userID, userID, limit, offset)
 
-	rows, err := s.DB.Query(query, userID, limit, offset)
+	rows, err := s.DB.Query(query)
 	if err != nil {
 		log.Printf("Error querying feed: %v\n", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch feed"})
 	}
 	defer rows.Close()
 
-	posts := s.scanPosts(rows)
-
-	// Count total posts for pagination
-	var totalPosts int
-	err = s.DB.QueryRow(`
-		SELECT COUNT(p.id)
-		FROM posts p
-		JOIN user_follows uf ON p.user_id = uf.followed_id
-		WHERE uf.follower_id = $1
-	`, userID).Scan(&totalPosts)
-	if err != nil {
-		log.Printf("Error counting feed posts: %v\n", err)
+	var posts []models.Post
+	for rows.Next() {
+		var p models.Post
+		var repostedBy sql.NullString
+		err := rows.Scan(
+			&p.ID, &p.UserID, &p.Username, &p.UserRank, &p.PostType,
+			&p.RecipeID, &p.RecipeTitle, &p.RecipeSlug, &p.RecipeImage,
+			&p.CookLogID, &p.Rating, &p.Notes,
+			&p.Content, &p.ImageURL, &p.ExternalURL, &p.CreatedAt,
+			&p.LikeCount, &p.RepostCount, &p.IsLiked, &p.IsReposted,
+			&repostedBy,
+		)
+		if err != nil {
+			log.Printf("Error scanning feed row: %v\n", err)
+			continue
+		}
+		if repostedBy.Valid {
+			p.RepostedBy = &repostedBy.String
+		}
+		posts = append(posts, p)
 	}
+
+	if posts == nil {
+		posts = []models.Post{}
+	}
+
+	// Simple count for pagination
+	var totalPosts int
+	err = s.DB.QueryRow(fmt.Sprintf(`
+		SELECT COUNT(*) FROM (
+			SELECT id FROM posts WHERE user_id = '%s' OR user_id IN (SELECT followed_id FROM user_follows WHERE follower_id = '%s')
+			UNION
+			SELECT original_post_id FROM post_reposts WHERE user_id IN (SELECT followed_id FROM user_follows WHERE follower_id = '%s')
+		) as total
+	`, userID, userID, userID)).Scan(&totalPosts)
 
 	totalPages := int(math.Ceil(float64(totalPosts) / float64(limit)))
 	if totalPages == 0 {
@@ -90,59 +137,39 @@ func (s *Store) GetExploreFeed(c echo.Context) error {
 	const limit = 20
 	offset := (page - 1) * limit
 
-	// Check if user is authenticated for like/repost status
 	userID, _ := c.Get("userID").(string)
-	userIDParam := sql.NullString{Valid: false}
-	if userID != "" {
-		userIDParam = sql.NullString{String: userID, Valid: true}
-	}
 
-	query := `
+	query := fmt.Sprintf(`
 		SELECT
 			p.id, p.user_id, u.username, u.rank, p.post_type,
 			p.recipe_id, r.title, r.slug, r.image_url,
 			p.cook_log_id, cl.rating, cl.notes,
-			p.content, p.created_at,
-			COUNT(DISTINCT pl.user_id) as like_count,
-			COUNT(DISTINCT pr.id) as repost_count,
-			CASE WHEN $1::VARCHAR IS NOT NULL
-				THEN EXISTS(SELECT 1 FROM post_likes WHERE post_id = p.id AND user_id = $1)
-				ELSE FALSE END as is_liked,
-			CASE WHEN $1::VARCHAR IS NOT NULL
-				THEN EXISTS(SELECT 1 FROM post_reposts WHERE original_post_id = p.id AND user_id = $1)
-				ELSE FALSE END as is_reposted
+			p.content, p.image_url, p.external_url, p.created_at,
+			(SELECT COUNT(*) FROM post_likes WHERE post_id = p.id) as like_count,
+			(SELECT COUNT(*) FROM post_reposts WHERE original_post_id = p.id) as repost_count,
+			EXISTS(SELECT 1 FROM post_likes WHERE post_id = p.id AND user_id = '%s') as is_liked,
+			EXISTS(SELECT 1 FROM post_reposts WHERE original_post_id = p.id AND user_id = '%s') as is_reposted,
+			NULL as reposted_by_username
 		FROM posts p
 		JOIN users u ON p.user_id = u.id
 		LEFT JOIN recipes r ON p.recipe_id = r.id
 		LEFT JOIN user_cooks_log cl ON p.cook_log_id = cl.id
-		LEFT JOIN post_likes pl ON p.id = pl.post_id
-		LEFT JOIN post_reposts pr ON p.id = pr.original_post_id
-		WHERE (r.status = 'public' OR r.status IS NULL)
-		GROUP BY p.id, u.username, u.rank, r.title, r.slug, r.image_url, cl.rating, cl.notes
+		WHERE (r.status IS NULL OR r.status = 'public')
 		ORDER BY p.created_at DESC
-		LIMIT $2 OFFSET $3
-	`
+		LIMIT %d OFFSET %d
+	`, userID, userID, limit, offset)
 
-	rows, err := s.DB.Query(query, userIDParam, limit, offset)
+	rows, err := s.DB.Query(query)
 	if err != nil {
-		log.Printf("Error querying explore feed: %v\n", err)
+		log.Printf("Error querying explore: %v\n", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch explore feed"})
 	}
 	defer rows.Close()
 
 	posts := s.scanPosts(rows)
 
-	// Count total posts for pagination
 	var totalPosts int
-	err = s.DB.QueryRow(`
-		SELECT COUNT(p.id)
-		FROM posts p
-		LEFT JOIN recipes r ON p.recipe_id = r.id
-		WHERE (r.status = 'public' OR r.status IS NULL)
-	`).Scan(&totalPosts)
-	if err != nil {
-		log.Printf("Error counting explore posts: %v\n", err)
-	}
+	err = s.DB.QueryRow(`SELECT COUNT(id) FROM posts p LEFT JOIN recipes r ON p.recipe_id = r.id WHERE (r.status IS NULL OR r.status = 'public')`).Scan(&totalPosts)
 
 	totalPages := int(math.Ceil(float64(totalPosts) / float64(limit)))
 	if totalPages == 0 {
@@ -168,59 +195,38 @@ func (s *Store) GetUserPosts(c echo.Context) error {
 	const limit = 20
 	offset := (page - 1) * limit
 
-	// Check if user is authenticated for like/repost status
 	userID, _ := c.Get("userID").(string)
-	userIDParam := sql.NullString{Valid: false}
-	if userID != "" {
-		userIDParam = sql.NullString{String: userID, Valid: true}
-	}
 
-	query := `
+	query := fmt.Sprintf(`
 		SELECT
 			p.id, p.user_id, u.username, u.rank, p.post_type,
 			p.recipe_id, r.title, r.slug, r.image_url,
 			p.cook_log_id, cl.rating, cl.notes,
-			p.content, p.created_at,
-			COUNT(DISTINCT pl.user_id) as like_count,
-			COUNT(DISTINCT pr.id) as repost_count,
-			CASE WHEN $1::VARCHAR IS NOT NULL
-				THEN EXISTS(SELECT 1 FROM post_likes WHERE post_id = p.id AND user_id = $1)
-				ELSE FALSE END as is_liked,
-			CASE WHEN $1::VARCHAR IS NOT NULL
-				THEN EXISTS(SELECT 1 FROM post_reposts WHERE original_post_id = p.id AND user_id = $1)
-				ELSE FALSE END as is_reposted
+			p.content, p.image_url, p.external_url, p.created_at,
+			(SELECT COUNT(*) FROM post_likes WHERE post_id = p.id) as like_count,
+			(SELECT COUNT(*) FROM post_reposts WHERE original_post_id = p.id) as repost_count,
+			EXISTS(SELECT 1 FROM post_likes WHERE post_id = p.id AND user_id = '%s') as is_liked,
+			EXISTS(SELECT 1 FROM post_reposts WHERE original_post_id = p.id AND user_id = '%s') as is_reposted,
+			NULL as reposted_by_username
 		FROM posts p
 		JOIN users u ON p.user_id = u.id
 		LEFT JOIN recipes r ON p.recipe_id = r.id
 		LEFT JOIN user_cooks_log cl ON p.cook_log_id = cl.id
-		LEFT JOIN post_likes pl ON p.id = pl.post_id
-		LEFT JOIN post_reposts pr ON p.id = pr.original_post_id
-		WHERE p.user_id = $2 AND (r.status = 'public' OR r.status IS NULL)
-		GROUP BY p.id, u.username, u.rank, r.title, r.slug, r.image_url, cl.rating, cl.notes
+		WHERE p.user_id = '%s' AND (r.status IS NULL OR r.status = 'public' OR p.user_id = '%s')
 		ORDER BY p.created_at DESC
-		LIMIT $3 OFFSET $4
-	`
+		LIMIT %d OFFSET %d
+	`, userID, userID, targetUserID, userID, limit, offset)
 
-	rows, err := s.DB.Query(query, userIDParam, targetUserID, limit, offset)
+	rows, err := s.DB.Query(query)
 	if err != nil {
-		log.Printf("Error querying user posts: %v\n", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to fetch user posts"})
 	}
 	defer rows.Close()
 
 	posts := s.scanPosts(rows)
 
-	// Count total posts for pagination
 	var totalPosts int
-	err = s.DB.QueryRow(`
-		SELECT COUNT(p.id)
-		FROM posts p
-		LEFT JOIN recipes r ON p.recipe_id = r.id
-		WHERE p.user_id = $1 AND (r.status = 'public' OR r.status IS NULL)
-	`, targetUserID).Scan(&totalPosts)
-	if err != nil {
-		log.Printf("Error counting user posts: %v\n", err)
-	}
+	err = s.DB.QueryRow(fmt.Sprintf(`SELECT COUNT(p.id) FROM posts p LEFT JOIN recipes r ON p.recipe_id = r.id WHERE p.user_id = '%s' AND (r.status IS NULL OR r.status = 'public' OR p.user_id = '%s')`, targetUserID, userID)).Scan(&totalPosts)
 
 	totalPages := int(math.Ceil(float64(totalPosts) / float64(limit)))
 	if totalPages == 0 {
@@ -239,16 +245,21 @@ func (s *Store) scanPosts(rows *sql.Rows) []models.Post {
 	var posts []models.Post
 	for rows.Next() {
 		var p models.Post
+		var repostedBy sql.NullString
 		err := rows.Scan(
 			&p.ID, &p.UserID, &p.Username, &p.UserRank, &p.PostType,
 			&p.RecipeID, &p.RecipeTitle, &p.RecipeSlug, &p.RecipeImage,
 			&p.CookLogID, &p.Rating, &p.Notes,
-			&p.Content, &p.CreatedAt,
+			&p.Content, &p.ImageURL, &p.ExternalURL, &p.CreatedAt,
 			&p.LikeCount, &p.RepostCount, &p.IsLiked, &p.IsReposted,
+			&repostedBy,
 		)
 		if err != nil {
 			log.Printf("Error scanning post row: %v\n", err)
 			continue
+		}
+		if repostedBy.Valid {
+			p.RepostedBy = &repostedBy.String
 		}
 		posts = append(posts, p)
 	}

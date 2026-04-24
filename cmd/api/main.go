@@ -83,15 +83,15 @@ func main() {
 	protected.PUT("/profile/preferences", s.UpdatePreferences)
 	protected.POST("/recipes/:id/log", s.LogCook)
 	protected.POST("/recipes", s.SubmitRecipe)
-	protected.GET("/recipes/my-submissions", s.GetMySubmissions)
+	protected.GET("/recipes/my-submissions", s.GetMyRecipes)
 
-	protected.GET("/my-favorite-ids", s.GetMyFavoriteIDs)
+	protected.GET("/my-favorite-ids", s.GetFavoriteIDs)
 	protected.GET("/my-cookbook", s.GetMyCookbook)
 	protected.POST("/recipes/:id/favorite", s.AddFavorite)
 	protected.DELETE("/recipes/:id/favorite", s.RemoveFavorite)
 
 	protected.POST("/recipes/private", s.CreatePrivateRecipe)
-	protected.GET("/my-private-recipes", s.GetMyPrivateRecipes)
+	protected.GET("/my-private-recipes", s.GetMyRecipes)
 	protected.PUT("/recipes/private/:id", s.UpdatePrivateRecipe)
 	protected.DELETE("/recipes/private/:id", s.DeletePrivateRecipe)
 	protected.POST("/recipes/private/:id/submit", s.SubmitPrivateRecipe)
@@ -105,6 +105,7 @@ func main() {
 	// --- Social Routes ---
 	protected.POST("/users/:id/follow", s.FollowUser)
 	protected.DELETE("/users/:id/follow", s.UnfollowUser)
+	protected.GET("/users/:id/follow-status", s.CheckFollowStatus)
 	protected.GET("/users/:id/followers", s.GetFollowers)
 	protected.GET("/users/:id/following", s.GetFollowing)
 	protected.GET("/feed", s.GetFeed)
@@ -115,8 +116,8 @@ func main() {
 	protected.DELETE("/posts/:id", s.DeletePost)
 
 	// Public social routes
-	api.GET("/explore", s.GetExploreFeed)
-	api.GET("/users/:id/posts", s.GetUserPosts)
+	api.GET("/explore", s.GetExploreFeed, authHandler.FirebaseMiddlewareOptional)
+	api.GET("/users/:id/posts", s.GetUserPosts, authHandler.FirebaseMiddlewareOptional)
 
 	// Start the server
 	port := os.Getenv("PORT")

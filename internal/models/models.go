@@ -129,6 +129,7 @@ type CleanCookLog struct {
 	Username  string    `json:"username"`
 	Rating    *int64    `json:"rating"`
 	Notes     *string   `json:"notes"`
+	ImageURL  *string   `json:"image_url"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -164,20 +165,22 @@ type UserProfile struct {
 	IsAdmin        bool      `json:"is_admin"`
 	IsSiteAdmin    bool      `json:"is_site_admin"`
 	UnitPreference string    `json:"unit_preference"` // "imperial" or "metric"
+	FollowerCount  int       `json:"follower_count"`
+	FollowingCount int       `json:"following_count"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type PublicUserProfile struct {
-	ID        string    `json:"id"`
-	Username  string    `json:"username"`
-	Rank      string    `json:"rank"`
-	XP        int       `json:"xp"`
-	Badges    []Badge   `json:"badges"`
-	CreatedAt time.Time `json:"created_at"`
+	ID             string    `json:"id"`
+	Username       string    `json:"username"`
+	Rank           string    `json:"rank"`
+	XP             int       `json:"xp"`
+	Badges         []Badge   `json:"badges"`
+	FollowerCount  int       `json:"follower_count"`
+	FollowingCount int       `json:"following_count"`
+	CreatedAt      time.Time `json:"created_at"`
 }
-
-// --- End Model Structs ---
 
 type PublicCookLog struct {
 	LogID       int64     `json:"log_id"`
@@ -186,4 +189,39 @@ type PublicCookLog struct {
 	LoggedAt    time.Time `json:"logged_at"`
 	Notes       *string   `json:"notes"`
 	Rating      *int64    `json:"rating"`
+	ImageURL    *string   `json:"image_url"`
+}
+
+// Post represents a feed item (cook_log, recipe_share, or quick_post)
+type Post struct {
+	ID          int64     `json:"id"`
+	UserID      string    `json:"user_id"`
+	Username    string    `json:"username"`
+	UserRank    string    `json:"user_rank"`
+	PostType    string    `json:"post_type"` // 'cook_log', 'recipe_share', 'quick_post'
+	RecipeID    *int64    `json:"recipe_id,omitempty"`
+	RecipeTitle *string   `json:"recipe_title,omitempty"`
+	RecipeSlug  *string   `json:"recipe_slug,omitempty"`
+	RecipeImage *string   `json:"recipe_image,omitempty"`
+	CookLogID   *int64    `json:"cook_log_id,omitempty"`
+	Rating      *int64    `json:"rating,omitempty"`
+	Notes       *string   `json:"notes,omitempty"`
+	Content     *string   `json:"content,omitempty"`
+	ImageURL    *string   `json:"image_url,omitempty"`
+	ExternalURL *string   `json:"external_url,omitempty"`
+	LikeCount   int       `json:"like_count"`
+	RepostCount int       `json:"repost_count"`
+	IsLiked     bool      `json:"is_liked"`
+	IsReposted  bool      `json:"is_reposted"`
+	RepostedBy  *string   `json:"reposted_by,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// Follow represents a user follow relationship
+type Follow struct {
+	FollowerID string    `json:"follower_id"`
+	FollowedID string    `json:"followed_id"`
+	Username   string    `json:"username"`
+	Rank       string    `json:"rank"`
+	CreatedAt  time.Time `json:"created_at"`
 }

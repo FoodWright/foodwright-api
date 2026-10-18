@@ -2,10 +2,12 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"log"
 	"net/http"
 	"regexp"
@@ -461,6 +463,100 @@ func buildRecipeFromSchema(schema SchemaRecipe, url string) models.Recipe {
 	return newRecipe
 }
 
+type requestProfile struct {
+	name    string
+	headers map[string]string
+}
+
+var fallbackProfiles = []requestProfile{
+	{
+		name: "Browser",
+		headers: map[string]string{
+			"User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+			"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+			"Accept-Language":           "en-US,en;q=0.5",
+			"Upgrade-Insecure-Requests": "1",
+			"Sec-Fetch-Dest":            "document",
+			"Sec-Fetch-Mode":            "navigate",
+			"Sec-Fetch-Site":            "none",
+			"Sec-Fetch-User":            "?1",
+		},
+	},
+	{
+		name: "FacebookBot",
+		headers: map[string]string{
+			"User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+			"Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		},
+	},
+	{
+		name: "Slackbot",
+		headers: map[string]string{
+			"User-Agent": "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)",
+			"Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		},
+	},
+	{
+		name: "Twitterbot",
+		headers: map[string]string{
+			"User-Agent": "Twitterbot/1.0",
+			"Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		},
+	},
+}
+
+func fetchWithFallback(ctx context.Context, targetURL string) (*http.Response, error) {
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			if len(via) > 0 {
+				for k, v := range via[0].Header {
+					req.Header[k] = v
+				}
+			}
+			return nil
+		},
+	}
+
+	var lastResp *http.Response
+	var lastErr error
+
+	for _, p := range fallbackProfiles {
+		req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range p.headers {
+			req.Header.Set(k, v)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			log.Printf("fetchWithFallback profile %s failed for %s: %v", p.name, targetURL, err)
+			continue
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			log.Printf("fetchWithFallback succeeded with profile %s for %s", p.name, targetURL)
+			return resp, nil
+		}
+
+		log.Printf("fetchWithFallback profile %s got HTTP %d for %s", p.name, resp.StatusCode, targetURL)
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		lastResp = resp
+	}
+
+	if lastResp != nil {
+		return lastResp, nil
+	}
+	return nil, lastErr
+}
+
 // ImportRecipeFromURL fetches a web page and extracts recipe JSON-LD structured data.
 func (s *Store) ImportRecipeFromURL(c echo.Context) error {
 	var req struct {
@@ -476,24 +572,7 @@ func (s *Store) ImportRecipeFromURL(c echo.Context) error {
 
 	log.Printf("ImportRecipeFromURL called for URL: %s", req.URL)
 
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-	}
-	httpReq, err := http.NewRequestWithContext(c.Request().Context(), "GET", req.URL, nil)
-	if err != nil {
-		log.Printf("Error creating request for %s: %v", req.URL, err)
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create request."})
-	}
-	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0")
-	httpReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-	httpReq.Header.Set("Accept-Language", "en-US,en;q=0.5")
-	httpReq.Header.Set("Upgrade-Insecure-Requests", "1")
-	httpReq.Header.Set("Sec-Fetch-Dest", "document")
-	httpReq.Header.Set("Sec-Fetch-Mode", "navigate")
-	httpReq.Header.Set("Sec-Fetch-Site", "none")
-	httpReq.Header.Set("Sec-Fetch-User", "?1")
-
-	resp, err := client.Do(httpReq)
+	resp, err := fetchWithFallback(c.Request().Context(), req.URL)
 	if err != nil {
 		log.Printf("Error fetching URL %s: %v", req.URL, err)
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Failed to fetch the URL: " + err.Error()})

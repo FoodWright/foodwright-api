@@ -1,7 +1,10 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -258,3 +261,37 @@ func TestFindAllJsonLdAndFindRecipe(t *testing.T) {
 		t.Fatalf("Expected 2 instructions, got %d", len(recipe.Instructions))
 	}
 }
+
+func TestFetchWithFallback(t *testing.T) {
+	attempts := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		ua := r.Header.Get("User-Agent")
+		if strings.Contains(ua, "Firefox") {
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte("Forbidden"))
+			return
+		}
+		if strings.Contains(ua, "facebookexternalhit") {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("OK from FacebookBot"))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer ts.Close()
+
+	resp, err := fetchWithFallback(context.Background(), ts.URL)
+	if err != nil {
+		t.Fatalf("fetchWithFallback failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts (fallback on 403), got %d", attempts)
+	}
+}
+

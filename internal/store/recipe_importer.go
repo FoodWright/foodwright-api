@@ -474,6 +474,8 @@ func (s *Store) ImportRecipeFromURL(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "A valid URL (starting with http:// or https://) is required."})
 	}
 
+	log.Printf("ImportRecipeFromURL called for URL: %s", req.URL)
+
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 	}
@@ -482,9 +484,14 @@ func (s *Store) ImportRecipeFromURL(c echo.Context) error {
 		log.Printf("Error creating request for %s: %v", req.URL, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create request."})
 	}
-	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	httpReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	httpReq.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0")
+	httpReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+	httpReq.Header.Set("Accept-Language", "en-US,en;q=0.5")
+	httpReq.Header.Set("Upgrade-Insecure-Requests", "1")
+	httpReq.Header.Set("Sec-Fetch-Dest", "document")
+	httpReq.Header.Set("Sec-Fetch-Mode", "navigate")
+	httpReq.Header.Set("Sec-Fetch-Site", "none")
+	httpReq.Header.Set("Sec-Fetch-User", "?1")
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -494,6 +501,13 @@ func (s *Store) ImportRecipeFromURL(c echo.Context) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("Error fetching URL %s: received HTTP status %d", req.URL, resp.StatusCode)
+		if resp.StatusCode == http.StatusForbidden {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Could not access that URL (HTTP 403 Forbidden): this site blocks automated scrapers."})
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Could not access that URL (HTTP 404 Not Found): please verify the URL."})
+		}
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("Could not access that URL (HTTP %d).", resp.StatusCode)})
 	}
 
@@ -505,6 +519,7 @@ func (s *Store) ImportRecipeFromURL(c echo.Context) error {
 
 	scripts := findAllJsonLd(doc)
 	if len(scripts) == 0 {
+		log.Printf("No JSON-LD scripts found for URL: %s", req.URL)
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Could not find any recipe data on that page."})
 	}
 
@@ -518,6 +533,7 @@ func (s *Store) ImportRecipeFromURL(c echo.Context) error {
 	}
 
 	if !found {
+		log.Printf("Found %d JSON-LD script(s) on %s, but none contained a 'Recipe' schema", len(scripts), req.URL)
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Found structured data, but could not find a 'Recipe' object."})
 	}
 

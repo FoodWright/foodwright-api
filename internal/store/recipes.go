@@ -161,6 +161,15 @@ func (s *Store) GetRecipeByID(c echo.Context) error {
 	return c.JSON(http.StatusOK, r)
 }
 
+func normalizeRecipeOrder(ingredients models.IngredientsList, instructions models.InstructionsList) {
+	for i := range ingredients {
+		ingredients[i].Order = i
+	}
+	for i := range instructions {
+		instructions[i].Order = i
+	}
+}
+
 // SubmitRecipe handles creating a public recipe immediately.
 func (s *Store) SubmitRecipe(c echo.Context) error {
 	userID := c.Get("userID").(string)
@@ -436,26 +445,3 @@ func (s *Store) GetFeaturedRecipes(c echo.Context) error {
 	return c.JSON(http.StatusOK, recipes)
 }
 
-func (s *Store) ImportRecipeFromURL(c echo.Context) error {
-	type ImportRequest struct {
-		URL string `json:"url"`
-	}
-	var req ImportRequest
-	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
-	}
-
-	newRecipe := models.Recipe{
-		Title:       "Imported Recipe",
-		Description: "Imported from " + req.URL,
-		Ingredients: models.IngredientsList{
-			{Name: "Check source URL for details", QuantityStr: "1", Unit: "each"},
-		},
-		Instructions: models.InstructionsList{
-			{Step: "Review the imported content and save."},
-		},
-		Source: sql.NullString{String: req.URL, Valid: true},
-	}
-
-	return c.JSON(http.StatusOK, newRecipe)
-}
